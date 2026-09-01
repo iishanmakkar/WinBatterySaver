@@ -1,0 +1,302 @@
+/* theme.css - Windows 11 Fluent Design System for JavaFX */
+.root {
+    -fx-font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+    -fx-font-size: 12px;
+    -fx-background-color: -fx-background-color;
+    -fx-text-fill: -wbs-text;
+    -fx-faint-focus-color: transparent;
+    -fx-focus-color: transparent;
+}
+
+.label {
+    -fx-text-fill: -wbs-text;
+}
+
+.muted {
+    -fx-text-fill: -wbs-text-muted;
+}
+
+/* Titlebar */
+.titlebar {
+    -fx-background-color: -wbs-titlebar-bg;
+    -fx-background-radius: 12 12 0 0;
+    -fx-border-color: -wbs-border;
+    -fx-border-width: 0 0 1 0;
+}
+.titlebar-icon {
+    -fx-text-fill: -wbs-accent-good;
+    -fx-font-weight: bold;
+}
+.titlebar-title {
+    -fx-text-fill: -wbs-titlebar-text;
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+}
+.titlebar-btn {
+    -fx-background-color: transparent;
+    -fx-text-fill: -wbs-text-muted;
+    -fx-background-radius: 4;
+    -fx-border-color: transparent;
+}
+.titlebar-btn:hover {
+    -fx-background-color: derive(-wbs-titlebar-bg, -10%);
+    -fx-text-fill: -wbs-text;
+}
+.titlebar-close:hover {
+    -fx-background-color: #ef4444;
+    -fx-text-fill: white;
+}
+
+/* Cards */
+.card {
+    -fx-background-color: -wbs-card-bg;
+    -fx-background-radius: 10;
+    -fx-border-color: -wbs-border;
+    -fx-border-radius: 10;
+    -fx-border-width: 1;
+}
+.card-title {
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+    -fx-text-fill: -wbs-text;
+}
+
+/* Battery Rings */
+.battery-ring-track {
+    -fx-stroke: -wbs-ring-track;
+}
+.battery-ring-high {
+    -fx-stroke: -wbs-accent-good;
+}
+.battery-ring-medium {
+    -fx-stroke: -wbs-accent-warn;
+}
+.battery-ring-low {
+    -fx-stroke: -wbs-accent-crit;
+}
+.battery-ring-unknown {
+    -fx-stroke: -wbs-text-muted;
+}
+
+/* Banners & Badges */
+.banner-info {
+    -fx-background-color: derive(-wbs-accent, 85%);
+    -fx-border-color: -wbs-accent;
+    -fx-text-fill: -wbs-text;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 8 12;
+}
+.banner-info .label {
+    -fx-text-fill: -wbs-text;
+}
+
+.banner-warn {
+    -fx-background-color: derive(-wbs-accent-warn, 80%);
+    -fx-border-color: -wbs-accent-warn;
+    -fx-text-fill: -wbs-text;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 8 12;
+}
+.banner-warn .label {
+    -fx-text-fill: -wbs-text;
+}
+
+.banner-success {
+    -fx-background-color: derive(-wbs-accent-good, 85%);
+    -fx-border-color: -wbs-accent-good;
+    -fx-text-fill: -wbs-accent-good;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 8 12;
+}
+.banner-success .label {
+    -fx-text-fill: -wbs-accent-good;
+}
+
+/* Tabs */
+.wbs-tabs {
+    -fx-background-color: transparent;
+}
+.wbs-tabs .tab-header-area {
+    -fx-padding: 6 12 0 12;
+}
+.wbs-tabs .tab-header-area .tab-header-background {
+    -fx-background-color: transparent;
+}
+.wbs-tabs .tab {
+    -fx-background-color: transparent;
+    -fx-background-radius: 6;
+    -fx-padding: 6 16;
+    -fx-cursor: hand;
+    -fx-border-color: transparent;
+}
+.wbs-tabs .tab:hover {
+    -fx-background-color: derive(-wbs-card-bg, -5%);
+}
+.wbs-tabs .tab:selected {
+    -fx-background-color: -wbs-card-bg;
+    -fx-border-color: -wbs-border;
+    -fx-border-width: 1 1 0 1;
+    -fx-border-radius: 6 6 0 0;
+    -fx-background-radius: 6 6 0 0;
+}
+.wbs-tabs .tab-label {
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+    -fx-text-fill: -wbs-text-muted;
+}
+.wbs-tabs .tab:selected .tab-label {
+    -fx-text-fill: -wbs-text;
+    -fx-font-weight: bold;
+}
+.wbs-tabs .tab-content-area {
+    -fx-background-color: transparent;
+    -fx-padding: 8;
+}
+
+/* ScrollPane & ScrollBar */
+.scroll-pane {
+    -fx-background-color: transparent;
+    -fx-background: transparent;
+    -fx-border-color: transparent;
+}
+.scroll-pane > .viewport {
+    -fx-background-color: transparent;
+}
+.scroll-bar:vertical, .scroll-bar:horizontal {
+    -fx-background-color: transparent;
+}
+.scroll-bar:vertical .track, .scroll-bar:horizontal .track {
+    -fx-background-color: transparent;
+}
+.scroll-bar:vertical .thumb, .scroll-bar:horizontal .thumb {
+    -fx-background-color: -wbs-border;
+    -fx-background-radius: 4;
+}
+.scroll-bar:vertical .thumb:hover, .scroll-bar:horizontal .thumb:hover {
+    -fx-background-color: -wbs-text-muted;
+}
+.scroll-bar .increment-button, .scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+/* TableView */
+.table-view {
+    -fx-background-color: -wbs-card-bg;
+    -fx-border-color: -wbs-border;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+}
+.table-view .column-header-background {
+    -fx-background-color: derive(-wbs-card-bg, -5%);
+}
+.table-view .column-header {
+    -fx-background-color: transparent;
+    -fx-border-color: -wbs-border;
+    -fx-border-width: 0 0 1 0;
+}
+.table-view .column-header .label {
+    -fx-text-fill: -wbs-text-muted;
+    -fx-font-weight: bold;
+    -fx-font-size: 11px;
+}
+.table-row-cell {
+    -fx-background-color: transparent;
+    -fx-border-color: -wbs-border;
+    -fx-border-width: 0 0 1 0;
+}
+.table-row-cell:hover {
+    -fx-background-color: derive(-wbs-card-bg, 8%);
+}
+.table-row-cell:selected {
+    -fx-background-color: derive(-wbs-accent, 70%);
+}
+.table-cell {
+    -fx-text-fill: -wbs-text;
+    -fx-alignment: CENTER-LEFT;
+}
+
+/* Buttons */
+.button, .toggle-button {
+    -fx-background-color: -wbs-card-bg;
+    -fx-text-fill: -wbs-text;
+    -fx-border-color: -wbs-border;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
+    -fx-padding: 6 12;
+    -fx-cursor: hand;
+    -fx-font-weight: 600;
+}
+.button:hover, .toggle-button:hover {
+    -fx-background-color: derive(-wbs-card-bg, 10%);
+}
+.primary-btn {
+    -fx-background-color: -wbs-accent;
+    -fx-text-fill: white;
+    -fx-border-color: transparent;
+}
+.primary-btn:hover {
+    -fx-background-color: derive(-wbs-accent, -10%);
+}
+.secondary-btn {
+    -fx-background-color: transparent;
+    -fx-border-color: -wbs-border;
+    -fx-text-fill: -wbs-text;
+}
+.secondary-btn:hover {
+    -fx-background-color: derive(-wbs-card-bg, -10%);
+}
+
+/* Inputs */
+.text-field, .combo-box, .spinner {
+    -fx-background-color: -wbs-input-bg;
+    -fx-text-fill: -wbs-text;
+    -fx-border-color: -wbs-border;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
+}
+.combo-box .list-cell {
+    -fx-text-fill: -wbs-text;
+    -fx-background-color: -wbs-input-bg;
+}
+.check-box .box {
+    -fx-background-color: -wbs-input-bg;
+    -fx-border-color: -wbs-border;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+.check-box:selected .box {
+    -fx-background-color: -wbs-accent;
+}
+.check-box .mark {
+    -fx-background-color: white;
+}
+
+/* Chart */
+.history-chart {
+    -fx-background-color: transparent;
+}
+.history-chart .chart-plot-background {
+    -fx-background-color: transparent;
+}
+.history-chart .chart-series-line {
+    -fx-stroke: -wbs-accent;
+    -fx-stroke-width: 2.5px;
+}
+.history-chart .chart-horizontal-grid-lines {
+    -fx-stroke: -wbs-border;
+    -fx-stroke-dash-array: 3 3;
+}
+.history-chart .chart-vertical-grid-lines {
+    -fx-stroke: transparent;
+}
+.history-chart .axis {
+    -fx-tick-label-fill: -wbs-text-muted;
+    -fx-font-size: 10px;
+}
+.history-chart .axis-label {
+    -fx-text-fill: -wbs-text-muted;
+}

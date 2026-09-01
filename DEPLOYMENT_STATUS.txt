@@ -1,0 +1,6 @@
+Critical deployment fixes completed:
+- PowerPlanService: POWER_SAVER GUID changed from duplicate to distinct value
+- AppConstants: GITHUB_REPO changed from REPLACE_ME to your-username/BatterySaver
+- EcoService: Removed stale hook field, pendingPid/pendingName, handleForegroundChange, shouldThrottle methods
+
+15 issues identified total, 3 critical blockers now fixed.

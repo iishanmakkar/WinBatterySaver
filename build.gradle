@@ -1,0 +1,239 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'org.openjfx.javafxplugin' version '0.1.0'
+}
+
+group = 'com.batterysaver'
+version = '1.0.1'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+javafx {
+    version = '17.0.6'
+    modules = [ 'javafx.controls', 'javafx.fxml', 'javafx.graphics' ]
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'net.java.dev.jna:jna:5.14.0'
+    implementation 'net.java.dev.jna:jna-platform:5.14.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+application {
+    mainClass = 'com.batterysaver.Launcher'
+}
+
+// ─── Fat (uber) JAR ─────────────────────────────────────────────────────────
+// Merges all runtime deps (JNA, JavaFX) into one self-contained JAR.
+// Used as the input for jpackage / Launch4j .exe creation.
+task fatJar(type: Jar) {
+    dependsOn configurations.runtimeClasspath
+    archiveFileName = 'WindowsBatterySaver.jar'
+    destinationDirectory = file("$buildDir/fat")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    manifest {
+        attributes(
+            'Main-Class'            : 'com.batterysaver.Launcher',
+            'Implementation-Title'  : 'Windows Battery Saver',
+            'Implementation-Version': version,
+            'Built-By'              : 'WBS Build'
+        )
+    }
+
+    from sourceSets.main.output
+    from {
+        configurations.runtimeClasspath.collect {
+            it.isDirectory() ? it : zipTree(it)
+        }
+    }
+    // Exclude module descriptor conflicts
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/MANIFEST.MF'
+    exclude 'module-info.class'
+}
+
+// ─── jpackage app-image (no WiX needed) ─────────────────────────────────────
+// Creates a self-contained app directory: WBS\WBS.exe + bundled JRE.
+ext {
+    jpackageBin = 'C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20.8-hotspot\\bin\\jpackage.exe'
+    if (project.hasProperty('jpackagePath')) {
+        jpackageBin = project.property('jpackagePath')
+    }
+}
+
+task jpackageAppImage(type: Exec) {
+    dependsOn fatJar
+    def outDir = file("$buildDir/jpackage-image").absolutePath
+
+    doFirst {
+        delete outDir
+        mkdir outDir
+    }
+
+    commandLine = [
+        jpackageBin,
+        '--type',        'app-image',
+        '--input',       file("$buildDir/fat").absolutePath,
+        '--dest',        outDir,
+        '--name',        'WindowsBatterySaver',
+        '--main-jar',    'WindowsBatterySaver.jar',
+        '--main-class',  'com.batterysaver.Launcher',
+        '--vendor',      'WBS Open Source',
+        '--description', 'Windows Battery Saver - Cross-OEM battery optimizer',
+        '--app-version', version,
+        '--win-console',         // shows no console window (requires --type app-image or later)
+        '--java-options', '--enable-native-access=javafx.graphics'
+    ]
+    ignoreExitValue = false
+}
+
+// ─── jpackage .exe installer (requires WiX 3.x on PATH) ───────────────────
+task jpackageInstaller(type: Exec) {
+    dependsOn fatJar
+    def outDir = file("$buildDir/jpackage-installer").absolutePath
+
+    doFirst {
+        delete outDir
+        mkdir outDir
+    }
+
+    commandLine = [
+        jpackageBin,
+        '--type',            'exe',
+        '--input',           file("$buildDir/fat").absolutePath,
+        '--dest',            outDir,
+        '--name',            'WindowsBatterySaver',
+        '--main-jar',        'WindowsBatterySaver.jar',
+        '--main-class',      'com.batterysaver.Launcher',
+        '--vendor',          'WBS Open Source',
+        '--description',     'Windows Battery Saver - Cross-OEM battery optimizer',
+        '--app-version',     version,
+        '--win-dir-chooser',
+        '--win-shortcut',
+        '--win-menu',
+        '--win-menu-group',  'Windows Battery Saver',
+        '--win-upgrade-uuid','a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        '--java-options',    '--enable-native-access=javafx.graphics'
+    ]
+    ignoreExitValue = true
+
+    doLast {
+        def exeFiles = fileTree(outDir).matching { include '**/*.exe' }.files
+        if (exeFiles) {
+            logger.lifecycle "✅ Installer created: ${exeFiles*.name}"
+        } else {
+            logger.lifecycle "⚠️  WiX toolset not found. Install WiX 3.x from https://github.com/wixtoolset/wix3/releases and re-run."
+            logger.lifecycle "   Alternatively, use 'gradlew jpackageAppImage' which does NOT require WiX."
+        }
+    }
+}
+
+// ─── Self-sign the .exe with a self-signed cert (no UAC red SmartScreen) ──
+task makeSelfSignedCert(type: Exec) {
+    commandLine = [
+        'powershell', '-ExecutionPolicy', 'Bypass', '-Command', '''
+$cert = New-SelfSignedCertificate `
+    -Subject "CN=Windows Battery Saver, O=WBS Open Source, C=IN" `
+    -KeyUsage DigitalSignature `
+    -FriendlyName "WBS Battery Saver Code Sign" `
+    -CertStoreLocation "Cert:\\CurrentUser\\My" `
+    -Type CodeSigningCert `
+    -NotAfter (Get-Date).AddYears(5)
+$thumbprint = $cert.Thumbprint
+Write-Host "CERT_THUMBPRINT=$thumbprint"
+$thumbprint | Out-File -FilePath "build\\cert_thumbprint.txt" -Encoding utf8
+'''
+    ]
+    ignoreExitValue = true
+    doLast {
+        logger.lifecycle "Self-signed cert created in CurrentUser\\My store."
+    }
+}
+
+task signExe {
+    dependsOn jpackageAppImage, makeSelfSignedCert
+    doLast {
+        def thumbprintFile = file("build/cert_thumbprint.txt")
+        def thumbprint = thumbprintFile.exists() ? thumbprintFile.text.trim() : ""
+
+        def exeFiles = fileTree("$buildDir/jpackage-image").matching { include '**/*.exe' }.files
+        if (!exeFiles) {
+            logger.lifecycle "No exe found to sign."
+            return
+        }
+
+        exeFiles.each { exeFile ->
+            if (thumbprint) {
+                def psCmd = "Set-AuthenticodeSignature -FilePath '${exeFile.absolutePath}' -Certificate (Get-Item 'Cert:\\CurrentUser\\My\\${thumbprint}') -TimestampServer 'http://timestamp.digicert.com'"
+                exec {
+                    commandLine 'powershell', '-ExecutionPolicy', 'Bypass', '-Command', psCmd
+                    ignoreExitValue = true
+                }
+                logger.lifecycle "Signed ${exeFile.name} with PowerShell."
+            } else {
+                logger.lifecycle "No thumbprint found to sign ${exeFile.name}."
+            }
+        }
+    }
+}
+
+// ─── Full portable ZIP (app-image zipped, no install needed) ───────────────
+task portableZip(type: Zip) {
+    dependsOn jpackageAppImage
+    archiveFileName = "WindowsBatterySaver-${version}-portable-win64.zip"
+    destinationDirectory = file("$buildDir/dist")
+    from(file("$buildDir/jpackage-image/WindowsBatterySaver"))
+    into 'WindowsBatterySaver'
+    doLast {
+        logger.lifecycle "✅ Portable ZIP: ${archiveFile.get()}"
+    }
+}
+
+// ─── Auto-start registry setup script ───────────────────────────────────────
+task generateAutoStartScript {
+    dependsOn jpackageAppImage
+    doLast {
+        def scriptDir = file("$buildDir/dist")
+        scriptDir.mkdirs()
+        def script = file("$scriptDir/install-autostart.ps1")
+        script.text = '''
+# WBS Auto-Start Installer
+# Registers WindowsBatterySaver.exe to launch minimized to tray on Windows boot.
+$ErrorActionPreference = "Stop"
+$exePath = Join-Path $PSScriptRoot "..\\jpackage-image\\WindowsBatterySaver\\WindowsBatterySaver.exe"
+if (-not (Test-Path $exePath)) {
+    Write-Host "ERROR: WindowsBatterySaver.exe not found at: $exePath" -ForegroundColor Red
+    exit 1
+}
+$cmd = \'"\' + $exePath + \'" --minimized\'
+Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsBatterySaver" -Value $cmd
+Write-Host "✅ Auto-start registered for: $exePath" -ForegroundColor Green
+Write-Host "WBS will now start silently to system tray every time you log in."
+'''
+        logger.lifecycle "Auto-start script: ${script.absolutePath}"
+    }
+}

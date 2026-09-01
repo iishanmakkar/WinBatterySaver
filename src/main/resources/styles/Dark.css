@@ -1,0 +1,57 @@
+/* Dark.css - Modern Windows 11 Fluent Dark Theme */
+.root {
+    -fx-background-color: #18181b;
+    -wbs-titlebar-bg: #18181b;
+    -wbs-card-bg: #27272a;
+    -wbs-border: #3f3f46;
+    -wbs-input-bg: #3f3f46;
+    -wbs-text: #f4f4f5;
+    -wbs-text-muted: #cbd5e1;
+    -wbs-accent-good: #22c55e;
+    -wbs-accent-warn: #f59e0b;
+    -wbs-accent-crit: #ef4444;
+    -wbs-accent: #3b82f6;
+    -wbs-titlebar-text: #f4f4f5;
+    -wbs-ring-track: #3f3f46;
+}
+
+/* Banners in Dark Mode */
+.banner-info {
+    -fx-background-color: #1e293b;
+    -fx-border-color: #3b82f6;
+    -fx-text-fill: #93c5fd;
+}
+.banner-info .label {
+    -fx-text-fill: #93c5fd;
+}
+
+.banner-warn {
+    -fx-background-color: #451a03;
+    -fx-border-color: #92400e;
+    -fx-text-fill: #fde047;
+}
+.banner-warn .label {
+    -fx-text-fill: #fde047;
+}
+
+.banner-success {
+    -fx-background-color: #064e3b;
+    -fx-border-color: #059669;
+    -fx-text-fill: #6ee7b7;
+}
+.banner-success .label {
+    -fx-text-fill: #6ee7b7;
+}
+
+/* Spinner styling for Dark mode */
+.spinner .editor {
+    -fx-background-color: #3f3f46;
+    -fx-text-fill: #f4f4f5;
+}
+.spinner .increment-arrow-button, .spinner .decrement-arrow-button {
+    -fx-background-color: #27272a;
+    -fx-border-color: #3f3f46;
+}
+.spinner .increment-arrow-button:hover, .spinner .decrement-arrow-button:hover {
+    -fx-background-color: #3f3f46;
+}

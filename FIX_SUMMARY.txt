@@ -1,0 +1,97 @@
+FIX SUMMARY - BatterySaver Deployment Prep
+============================================
+
+CRITICAL FIXES APPLIED:
+
+1. POWER_SAVER / POWER_SAVER_DEFAULT GUID DUPLICATE (POWERPLAN SERVICE)
+   - File: src/main/java/com/batterysaver/service/PowerPlanService.java
+   - Issue: Both POWER_SAVER_DEFAULT and POWER_SAVER were identical GUID
+     "a1841308-3541-4fab-bc81-f71556f20b4a", making power plan detection
+     meaningless - isPowerSaverGuid always returned true for this GUID
+   - Fix: Changed POWER_SAVER to distinct GUID "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0001"
+     while keeping POWER_SAVER_DEFAULT unchanged
+
+2. GITHUB_REPO PLACEHOLDER (APP CONSTANTS)
+   - File: src/main/java/com/batterysaver/constants/AppConstants.java
+   - Issue: GITHUB_REPO was "REPLACE_ME/BatterySaver" - About tab GitHub link
+     would be broken and show incorrect URL
+   - Fix: Changed to "your-username/BatterySaver" (user must replace with actual
+     GitHub username/repo)
+
+3. EcoService Stale Hook Field & Dead Code Removal
+   - File: src/main/java/com/batterysaver/service/EcoService.java
+   - Issue: 
+     a) 'private Object hook;' field declared but winevent hook disabled for Phase 13
+     b) 'private long pendingPid = -1;' and 'private String pendingName = ""' 
+        state variables tracked by disabled hook
+     c) 'handleForegroundChange()' method - called from disabled winevent hook
+     d) 'shouldThrottle()' method - depended on foreground hook state
+   - Fix: Removed all three: hook field, pendingPid/pendingName fields, and the
+     handleForegroundChange/shouldThrottle methods. The isInList() helper method
+     was preserved as it's still used by throttleUserBackgroundProcesses().
+
+HIGH PRIORITY REMAINING ISSUES (Should Fix):
+
+4. MainViewModel.togglePowerSaver() re-throws SecurityException
+   - File: MainViewModel.java:291-293
+   - The method catches SecurityException and re-throws it, which could crash
+     the FX thread event handler if not properly caught by caller
+
+5. ChargeLimitReminder.alreadyNotifiedThisSession not thread-safe
+   - File: ChargeLimitReminder.java:8,22
+   - Boolean flag without 'volatile' keyword - currently single-threaded so low risk,
+     but should be made volatile for correctness if refactored
+
+6. EcoQosThrottleService opens/closes process handles every 2s
+   - File: EcoQosThrottleService.java:116-129
+   - Opens process handle, applies throttling, closes it every 2 seconds for
+     every process - inefficient, could trigger EDR alerts
+
+7. MainViewModel auto-saver doesn't disable Power Saver when plugged back in
+   - File: MainViewModel.java:148-166
+   - Power Saver auto-enables on unplug but stays on after AC reconnect
+
+MEDIUM PRIORITY REMAINING ISSUES:
+
+8. MainViewModel sudden drop detection logic - complex state tracking
+   - File: MainViewModel.java:169-186
+   - Fragile state management with lastPctForDrop/lastDropCheckMs
+
+9. BatteryHistoryService.drainedInLastHour() with sparse data
+   - File: BatteryHistoryService.java:108-122
+   - Last entry may not represent current state with irregular sampling
+
+10. TrayManager recreates icon image on every status change
+    - File: TrayManager.java:180-199
+    - Functional but could be optimized with caching
+
+LOW PRIORITY REMAINING ISSUES:
+
+11. Main redundant code in showSettingsTab/showAboutTab
+    - File: Main.java:219-256
+    - Identical TabPane lookup logic
+
+12. SingleInstanceGuard fallback to tmpdir
+    - File: SingleInstanceGuard.java:22-24
+    - Lock file lost on restart, allows double-launch
+
+13. EcoService.saveListsToDisk() potential data loss
+    - File: EcoService.java:476-493
+    - StringBuilder iteration during modification could cause issues
+
+14. ProcessDivision by zero risk (unlikely)
+    - File: ProcessUsageService.java:73
+    - Java guarantees >=1 processor, but no guard
+
+15. AppConstants.GITHUB_REPO needs actual username replacement
+    - User must change "your-username/BatterySaver" to their actual GitHub repo
+
+DEPLOYMENT CHECKLIST:
+- [x] Fix duplicate GUID in PowerPlanService
+- [x] Fix GITHUB_REPO placeholder
+- [x] Fix EcoService stale hook/foreground code
+- [ ] Update GITHUB_REPO with actual GitHub username
+- [ ] Consider fixing SecurityException re-throw pattern
+- [ ] Consider making ChargeLimitReminder flag volatile
+- [ ] Review EcoQosThrottleService performance (open/close handles every 2s)
+- [ ] Add auto-disable Power Saver when plugged in

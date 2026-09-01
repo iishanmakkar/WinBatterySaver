@@ -1,0 +1,44 @@
+/* Light.css - Modern Windows 11 Fluent Light Theme */
+.root {
+    -fx-background-color: #f4f4f5;
+    -wbs-titlebar-bg: #f4f4f5;
+    -wbs-card-bg: #ffffff;
+    -wbs-border: #e4e4e7;
+    -wbs-input-bg: #ffffff;
+    -wbs-text: #18181b;
+    -wbs-text-muted: #64748b;
+    -wbs-accent-good: #16a34a;
+    -wbs-accent-warn: #d97706;
+    -wbs-accent-crit: #dc2626;
+    -wbs-accent: #2563eb;
+    -wbs-titlebar-text: #18181b;
+    -wbs-ring-track: #e4e4e7;
+}
+
+/* Banners in Light Mode */
+.banner-info {
+    -fx-background-color: #eff6ff;
+    -fx-border-color: #bfdbfe;
+    -fx-text-fill: #1d4ed8;
+}
+.banner-info .label {
+    -fx-text-fill: #1d4ed8;
+}
+
+.banner-warn {
+    -fx-background-color: #fffbeb;
+    -fx-border-color: #fde68a;
+    -fx-text-fill: #b45309;
+}
+.banner-warn .label {
+    -fx-text-fill: #b45309;
+}
+
+.banner-success {
+    -fx-background-color: #ecfdf5;
+    -fx-border-color: #a7f3d0;
+    -fx-text-fill: #047857;
+}
+.banner-success .label {
+    -fx-text-fill: #047857;
+}
