@@ -1,7 +1,7 @@
-<div align="center">
+﻿<div align="center">
   <img src="docs/hero.jpg" alt="WBS Hero Banner" width="100%">
   
-  # WBS - Windows Battery Saver ⚡💻
+  # WBS - Windows Battery Saver 🔋
   
   **Cross-OEM, Lightweight & Intelligent Laptop Battery Saver for Windows 11 & 10**
 
@@ -16,7 +16,7 @@ WBS (Windows Battery Saver) is an open-source, production-ready utility designed
 
 ---
 
-## 📸 Application Preview
+## 💻 Application Preview
 
 <div align="center">
   <img src="docs/screenshot.jpg" alt="WBS Application Screenshot" width="800">
@@ -29,22 +29,24 @@ WBS (Windows Battery Saver) is an open-source, production-ready utility designed
 ## 📑 Table of Contents
 
 - [Key Features](#-key-features)
-- [Building & Running](#%EF%B8%8F-building--running)
-- [Architecture](#%EF%B8%8F-architecture)
+- [Installation](#-installation)
+- [Building & Running](#-building--running)
+- [Architecture](#-architecture)
+- [Contributing](#-contributing)
 - [License](#-license)
 
 ---
 
-## 🌟 Key Features
+## ✨ Key Features
 
 - **⚡ EnergyStar EcoQoS Throttling**: Automatically applies Windows **Efficiency Mode (EcoQoS)** to background processes when they lose focus. Reduces background CPU power consumption by 15%–30% without slowing active foreground applications.
 - **🎨 Windows 11 Fluent UI**: Modern interface with seamless **Dark** and **Light** themes, sleek TabPane navigation, custom scrollbars, and high-contrast typography.
 - **🧹 One-Click RAM & Power Optimizer**: Clears cached RAM (`EmptyWorkingSet`) to reduce background memory/disk paging and lowers display brightness.
 - **🔋 Battery Health & Cycle Tracking**: Reads design capacity, full charge capacity, wear %, and charge cycles directly from system hardware.
-- **📊 Adaptive History & Drain Analytics**: Live, interactive battery history line chart tracking battery percentage trends over 1h, 2h, 6h, 24h, or 7d.
-- **⚡ Smart Power Saver Fallback**: Automatically creates and restores Windows Power Saver schemes, or applies software-based throttling on Modern Standby / GPO-restricted laptops.
-- **🛡️ Charge Limit Reminders**: Notifies when battery reaches the recommended 80% charge limit to prevent battery degradation and heat stress.
-- **🚀 Auto-Start & Tray Operations**: Automatically starts minimized to the Windows system tray (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+- **📈 Adaptive History & Drain Analytics**: Live, interactive battery history line chart tracking battery percentage trends over 1h, 2h, 6h, 24h, or 7d.
+- **🛡️ Smart Power Saver Fallback**: Automatically creates and restores Windows Power Saver schemes, or applies software-based throttling on Modern Standby / GPO-restricted laptops.
+- **🔔 Charge Limit Reminders**: Notifies when battery reaches the recommended 80% charge limit to prevent battery degradation and heat stress.
+- **⚙️ Auto-Start & Tray Operations**: Automatically starts minimized to the Windows system tray (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
 
 ---
 
@@ -102,18 +104,17 @@ Created by [Ishan Makkar](https://buymeacoffee.com/iishanmakkar). If you find th
 
 ---
 
-## 📄 License
+## 📜 License
 Released under the [MIT License](LICENSE). Free for personal and commercial use.
 
 ---
 
-## ?? Contributing
+## 🤝 Contributing
 We welcome contributions from the community! If you have suggestions for new features, bug fixes, or improvements, please feel free to:
 
 1. Fork the repository.
-2. Create a new branch (git checkout -b feature/your-feature-name).
+2. Create a new branch (`git checkout -b feature/your-feature-name`).
 3. Make your changes.
-4. Commit your changes (git commit -m 'Add new feature').
-5. Push to the branch (git push origin feature/your-feature-name).
+4. Commit your changes (`git commit -m 'Add new feature'`).
+5. Push to the branch (`git push origin feature/your-feature-name`).
 6. Open a Pull Request.
-
