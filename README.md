@@ -104,3 +104,16 @@ Created by [Ishan Makkar](https://buymeacoffee.com/iishanmakkar). If you find th
 
 ## 📄 License
 Released under the [MIT License](LICENSE). Free for personal and commercial use.
+
+---
+
+## ?? Contributing
+We welcome contributions from the community! If you have suggestions for new features, bug fixes, or improvements, please feel free to:
+
+1. Fork the repository.
+2. Create a new branch (git checkout -b feature/your-feature-name).
+3. Make your changes.
+4. Commit your changes (git commit -m 'Add new feature').
+5. Push to the branch (git push origin feature/your-feature-name).
+6. Open a Pull Request.
+
