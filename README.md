@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
   <img src="docs/hero.jpg" alt="WBS Hero Banner" width="100%">
   
   # WBS - Windows Battery Saver 🔋
