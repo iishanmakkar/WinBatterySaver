@@ -7,7 +7,7 @@
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
   [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue.svg)](https://microsoft.com/windows)
-  [![Java](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://openjdk.java.net/)
+  [![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://openjdk.java.net/)
   [![Build](https://img.shields.io/badge/Build-Gradle-02303A.svg)](https://gradle.org)
 
 </div>
@@ -63,14 +63,14 @@ WBS (Windows Battery Saver) is an open-source, production-ready utility designed
 
 ### Requirements
 - **OS**: Windows 10 (1709+) or Windows 11
-- **JDK**: Java 17+ (configured for Java 17 / OpenJFX 17.0.6)
+- **JDK**: Java 17+ (bytecode target 17 / OpenJFX 21.0.2)
 - **Build System**: Gradle (wrapper included)
 
 ### Build Executable & Run
 ```powershell
 # Clone repository
 git clone https://github.com/iishanmakkar/WinBatterySaver.git
-cd BatterySaver
+cd WinBatterySaver
 
 # Compile and run unit tests
 .\gradlew.bat test

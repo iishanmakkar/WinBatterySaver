@@ -10,7 +10,11 @@ import com.sun.jna.platform.win32.WinReg;
  */
 public class StartupService {
     private static final String KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-    private static final String VALUE = "BatterySaver";
+    // Must match the name used by build.gradle's generateAutoStartScript, otherwise
+    // two different Run entries can coexist and double-start the app.
+    private static final String VALUE = "WindowsBatterySaver";
+    // Legacy entry written by older builds of this app
+    private static final String LEGACY_VALUE = "BatterySaver";
 
     public void enable(String exePath) {
         if (exePath == null || exePath.isBlank()) {
@@ -19,21 +23,30 @@ public class StartupService {
         // Quote path and add --minimized so Main starts to tray without flashing window
         String cmd = "\"" + exePath + "\" --minimized";
         Advapi32Util.registrySetStringValue(WinReg.HKEY_CURRENT_USER, KEY, VALUE, cmd);
+        // Clean up any legacy entry from older versions
+        try {
+            if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, LEGACY_VALUE)) {
+                Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, KEY, LEGACY_VALUE);
+            }
+        } catch (Exception ignored) {}
     }
 
     public void disable() {
-        try {
-            if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, VALUE)) {
-                Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, KEY, VALUE);
+        for (String value : new String[]{VALUE, LEGACY_VALUE}) {
+            try {
+                if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, value)) {
+                    Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, KEY, value);
+                }
+            } catch (Exception e) {
+                System.err.println("StartupService.disable failed: " + e.getMessage());
             }
-        } catch (Exception e) {
-            System.err.println("StartupService.disable failed: " + e.getMessage());
         }
     }
 
     public boolean isEnabled() {
         try {
-            return Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, VALUE);
+            return Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, VALUE)
+                    || Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, LEGACY_VALUE);
         } catch (Exception e) {
             return false;
         }
@@ -41,7 +54,7 @@ public class StartupService {
 
     public String getRegisteredCommand() {
         try {
-            if (isEnabled()) {
+            if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, VALUE)) {
                 return Advapi32Util.registryGetStringValue(WinReg.HKEY_CURRENT_USER, KEY, VALUE);
             }
         } catch (Exception ignored) {}

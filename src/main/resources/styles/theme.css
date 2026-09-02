@@ -2,7 +2,6 @@
 .root {
     -fx-font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
     -fx-font-size: 12px;
-    -fx-background-color: -fx-background-color;
     -fx-text-fill: -wbs-text;
     -fx-faint-focus-color: transparent;
     -fx-focus-color: transparent;

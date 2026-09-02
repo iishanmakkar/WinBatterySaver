@@ -1,10 +1,9 @@
 package com.batterysaver.model;
 
 public class Battery {
-    private int percent;
+    private int percent = -1; // -1 = unknown (don't show a bogus "0%")
     private boolean onAC;
-    private int remainingSeconds;
-    private int fullLifeSeconds;
+    private int remainingSeconds = -1;
     private boolean highFlag;
     private boolean lowFlag;
     private boolean criticalFlag;
@@ -17,8 +16,6 @@ public class Battery {
     public void setOnAC(boolean onAC) { this.onAC = onAC; }
     public int getRemainingSeconds() { return remainingSeconds; }
     public void setRemainingSeconds(int remainingSeconds) { this.remainingSeconds = remainingSeconds; }
-    public int getFullLifeSeconds() { return fullLifeSeconds; }
-    public void setFullLifeSeconds(int fullLifeSeconds) { this.fullLifeSeconds = fullLifeSeconds; }
     public boolean isHighFlag() { return highFlag; }
     public void setHighFlag(boolean highFlag) { this.highFlag = highFlag; }
     public boolean isLowFlag() { return lowFlag; }

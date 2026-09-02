@@ -14,8 +14,9 @@ import java.util.concurrent.*;
  */
 public class IdleDimmingService {
     private final BrightnessService brightnessService;
-    private final long idleThresholdMs;
-    private final int dimToPercent;
+    // volatile: updatable at runtime via updateSettings() (Settings save)
+    private volatile long idleThresholdMs;
+    private volatile int dimToPercent;
     private final int restoreToPercent;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "idle-dim-poller");
@@ -25,6 +26,9 @@ public class IdleDimmingService {
     private volatile boolean active = false;
     private volatile boolean isDimmed = false;
     private volatile int savedBrightness = -1;
+    // Set once WMI brightness proves unsupported - stops the 2-spawn PowerShell
+    // attempt on every idle dim/restore cycle
+    private volatile boolean brightnessUnsupported = false;
 
     public IdleDimmingService(BrightnessService brightnessService,
                               int idleMinutes,
@@ -34,6 +38,12 @@ public class IdleDimmingService {
         this.idleThresholdMs = (long) idleMinutes * 60_000L;
         this.dimToPercent = dimToPercent;
         this.restoreToPercent = restoreToPercent;
+    }
+
+    /** Live-update the idle threshold (minutes) and dim level from Settings. */
+    public void updateSettings(int idleMinutes, int dimToPercent) {
+        this.idleThresholdMs = (long) idleMinutes * 60_000L;
+        this.dimToPercent = dimToPercent;
     }
 
     public void start() {
@@ -47,45 +57,37 @@ public class IdleDimmingService {
                 boolean ok = User32Ext.INSTANCE.GetLastInputInfo(lii);
                 if (!ok) return;
                 lii.read();
-                long lastInputTick = Integer.toUnsignedLong(lii.dwTime);
-                long nowTick;
-                try {
-                    nowTick = Long.divideUnsigned(Kernel32Ext.INSTANCE.GetTickCount64(), 1);
-                } catch (UnsatisfiedLinkError | Exception e) {
-                    // Fallback to GetTickCount (32-bit, wraps every 49 days - still monotonic for idle calc)
-                    nowTick = Integer.toUnsignedLong(Kernel32Ext.INSTANCE.GetTickCount());
-                }
-                // Handle 32-bit wrap: unsigned subtraction
-                long idleMs = nowTick - lastInputTick;
-                // If idleMs negative due to type issues, clamp
+                long idleMs = idleMillis(lii.dwTime, currentTick());
                 if (idleMs < 0) idleMs = 0;
-                // Also handle case where dwTime wraps - if now < last, add 2^32
-                if (nowTick < lastInputTick) {
-                    idleMs = (0xFFFFFFFFL - lastInputTick) + nowTick + 1;
-                }
 
                 if (idleMs >= idleThresholdMs) {
                     if (!isDimmed) {
                         isDimmed = true;
-                        // Save current brightness before dimming, if possible (on background thread, not FX)
-                        try {
-                            savedBrightness = brightnessService.getBrightness();
-                        } catch (UnsupportedOperationException ignored) {
-                            savedBrightness = restoreToPercent;
-                        } catch (Exception ignored) {
-                            savedBrightness = restoreToPercent;
+                        if (!brightnessUnsupported) {
+                            // Save current brightness before dimming (2 PowerShell spawns
+                            // per transition - skipped entirely once we know it's unsupported)
+                            try {
+                                savedBrightness = brightnessService.getBrightness();
+                            } catch (UnsupportedOperationException e) {
+                                brightnessUnsupported = true;
+                                savedBrightness = restoreToPercent;
+                            } catch (Exception ignored) {
+                                savedBrightness = restoreToPercent;
+                            }
+                            try { brightnessService.setBrightness(dimToPercent); }
+                            catch (UnsupportedOperationException e) { brightnessUnsupported = true; }
+                            catch (Exception ignored) {}
                         }
-                        try { brightnessService.setBrightness(dimToPercent); }
-                        catch (UnsupportedOperationException ignored) {}
-                        catch (Exception ignored) {}
                     }
                 } else {
                     if (isDimmed) {
                         isDimmed = false;
-                        int toRestore = savedBrightness >= 0 ? savedBrightness : restoreToPercent;
-                        try { brightnessService.setBrightness(toRestore); }
-                        catch (UnsupportedOperationException ignored) {}
-                        catch (Exception ignored) {}
+                        if (!brightnessUnsupported) {
+                            int toRestore = savedBrightness >= 0 ? savedBrightness : restoreToPercent;
+                            try { brightnessService.setBrightness(toRestore); }
+                            catch (UnsupportedOperationException e) { brightnessUnsupported = true; }
+                            catch (Exception ignored) {}
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -93,6 +95,27 @@ public class IdleDimmingService {
                 System.err.println("IdleDimmingService poll error: " + e.getMessage());
             }
         }, 0, 2, TimeUnit.SECONDS);
+    }
+
+    /** Current tick in the 32-bit wrap domain of LASTINPUTINFO.dwTime. */
+    private static int currentTick() {
+        long now64;
+        try {
+            now64 = Kernel32Ext.INSTANCE.GetTickCount64();
+        } catch (UnsatisfiedLinkError | Exception e) {
+            now64 = Integer.toUnsignedLong(Kernel32Ext.INSTANCE.GetTickCount());
+        }
+        return (int) now64; // low 32 bits - same wrap domain as dwTime
+    }
+
+    /**
+     * Idle milliseconds between two 32-bit tick counters. LASTINPUTINFO.dwTime wraps
+     * every ~49.7 days, so the delta MUST be computed mod 2^32 (mixing in the
+     * unwrapped 64-bit counter breaks permanently after wrap and dims forever).
+     * Package-private for testing.
+     */
+    static long idleMillis(int lastInputTick, int nowTick) {
+        return Integer.toUnsignedLong(nowTick - lastInputTick);
     }
 
     public void stop() {

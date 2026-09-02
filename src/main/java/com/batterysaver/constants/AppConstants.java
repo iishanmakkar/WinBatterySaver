@@ -7,10 +7,14 @@ public final class AppConstants {
     public static final String APP_NAME = "Windows Battery Saver";
     public static final String APP_SHORT_NAME = "WBS";
     public static final String APP_FULL_NAME = "Windows Battery Saver (WBS)";
-    public static final String VERSION = "1.0.0";
+    // Single source of truth for the version. Keep in sync with build.gradle 'version'
+    // (referenced by UpdateCheckService and all UI labels).
+    public static final String VERSION = "1.0.2";
     public static final String WINDOW_TITLE_EXPANDED = "WBS - Windows Battery Saver";
     public static final String TRAY_TOOLTIP_PREFIX = "WBS";
     public static final String GITHUB_REPO = "iishanmakkar/WinBatterySaver";
+    // Developer's GitHub profile (About tab) - derived from the repo owner
+    public static final String GITHUB_PROFILE = "iishanmakkar";
     // Compact window size - real-software: 620x260 to prevent bottom clipping (WMC ~600x180, was 260x90 tiny)
     public static final int COMPACT_WIDTH = 620;
     public static final int COMPACT_HEIGHT = 260;

@@ -57,16 +57,22 @@ public class BrightnessService {
             pb.redirectErrorStream(true);
             Process p = pb.start();
             StringBuilder sb = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                String line;
-                while ((line = r.readLine()) != null) sb.append(line).append("\n");
-            }
+            // Drain on a daemon thread so the timeout can actually fire
+            Thread reader = new Thread(() -> {
+                try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String line;
+                    while ((line = r.readLine()) != null) sb.append(line).append("\n");
+                } catch (Exception ignored) {}
+            }, "brightness-io");
+            reader.setDaemon(true);
+            reader.start();
             boolean finished = p.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
                 p.destroyForcibly();
                 p.waitFor(1, TimeUnit.SECONDS);
                 return null; // treat as unsupported, not hang
             }
+            reader.join(300);
             // Non-zero exit -> unsupported (e.g. WMI disabled, corporate policy)
             if (p.exitValue() != 0 && sb.length() == 0) return null;
             return sb.toString().trim();

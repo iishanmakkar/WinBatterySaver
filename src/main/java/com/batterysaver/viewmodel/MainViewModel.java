@@ -1,7 +1,6 @@
 package com.batterysaver.viewmodel;
 
 import com.batterysaver.constants.AppConstants;
-import com.batterysaver.interop.PowerThrottlingState;
 import com.batterysaver.model.Battery;
 import com.batterysaver.service.*;
 import javafx.application.Platform;
@@ -13,6 +12,8 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Shared ViewModel for Compact + Expanded views.
@@ -30,8 +31,14 @@ public class MainViewModel {
 
     // Power saver
     private final BooleanProperty powerSaverOn = new SimpleBooleanProperty(false);
+    /** User intent / master switch for EcoQoS (Settings checkbox + button state source). */
     private final BooleanProperty ecoQosEnabled = new SimpleBooleanProperty(true);
+    /** ACTUAL service state (is the throttling engine running right now). The UI
+     *  binds to this, not to the intent, so it can never claim "ON" while stopped. */
+    private final BooleanProperty ecoQosRunning = new SimpleBooleanProperty(false);
     private final IntegerProperty throttledCount = new SimpleIntegerProperty(0);
+    /** Last action error (user-visible); blank when the last action succeeded. */
+    private final StringProperty actionError = new SimpleStringProperty("");
 
     // Health
     private final StringProperty healthText = new SimpleStringProperty("Health: checking...");
@@ -45,8 +52,10 @@ public class MainViewModel {
     private final ObservableList<ProcessRow> processRows = FXCollections.observableArrayList();
     public record ProcessRow(String name, double cpu) {}
 
-    // Settings passthrough (backed by SettingsService.Config)
-    private SettingsService.Config config;
+    // Settings passthrough (backed by SettingsService.Config).
+    // volatile: updateConfig() swaps the object from the FX thread while the
+    // vm-poller thread reads it.
+    private volatile SettingsService.Config config;
 
     // Services
     private final BatteryHistoryService historyService;
@@ -58,11 +67,21 @@ public class MainViewModel {
     private final EcoQosThrottleService ecoQosThrottleService;
 
     private ScheduledExecutorService poller;
+    // AC transition tracking - baseline is unknown until the first poll, so launching
+    // on battery does NOT fire the "just unplugged" auto-saver
+    private boolean wasAcOnlineKnown = false;
     private boolean wasAcOnline = true;
+    private int pollTick = 0;
     private long lastHealthRefreshMs = 0;
     private int lastPctForDrop = -1;
     private long lastDropCheckMs = 0;
-    private final StringProperty ecoStatus = new SimpleStringProperty("Eco: idle");
+    // True when the poller auto-started EcoQoS (vs the user starting it manually).
+    // The poller only auto-STOPS what it auto-started - a manual "ON" is authoritative.
+    private volatile boolean ecoQosAutoStarted = false;
+    // Set by Main; receives sudden-drop messages for user-visible notification.
+    private volatile Consumer<String> suddenDropListener;
+    // Serializes togglePowerSaver executions (button double-clicks, hotkey + poller).
+    private final AtomicBoolean toggleInFlight = new AtomicBoolean(false);
 
     public MainViewModel(SettingsService.Config cfg,
                          BatteryHistoryService historyService,
@@ -79,6 +98,9 @@ public class MainViewModel {
         this.powerPlanService = powerSaverService.getPowerPlanService();
         this.ecoService = ecoService != null ? ecoService : new EcoService();
         this.ecoQosThrottleService = ecoQosThrottleService != null ? ecoQosThrottleService : new EcoQosThrottleService();
+        // Runtime EcoQoS master switch starts from the SAVED setting - a user who
+        // disabled EcoQoS must not get throttling back after a restart
+        this.ecoQosEnabled.set(cfg.ecoQosEnabled);
         // Sync to real OS state on start, not cached flag
         try {
             String cur = powerPlanService.getActivePlanGuid();
@@ -88,11 +110,16 @@ public class MainViewModel {
             this.powerSaverOn.set(powerSaverService.isActive());
         }
 
-        // Standby note one-shot
-        try {
-            String note = modernStandbyService.getNote();
-            if (note != null) standbyNote.set(note);
-        } catch (Exception ignored) {}
+        // Standby note one-shot - powercfg spawn can take seconds, keep it off the FX
+        // thread so the first window paints immediately
+        Thread standbyInit = new Thread(() -> {
+            try {
+                String note = modernStandbyService.getNote();
+                if (note != null) Platform.runLater(() -> standbyNote.set(note));
+            } catch (Exception ignored) {}
+        }, "standby-init");
+        standbyInit.setDaemon(true);
+        standbyInit.start();
 
         startPolling();
     }
@@ -105,28 +132,32 @@ public class MainViewModel {
         });
         poller.scheduleAtFixedRate(() -> {
             try {
+                pollTick++;
                 Battery b = BatteryStatusService.getLastStatus();
                 int pct = b.getPercent();
                 boolean ac = b.isOnAC();
                 boolean ch = b.isChargingFlag() || (ac && pct >= 0 && pct < 100);
 
+                // BatteryLifeTime is the DISCHARGE estimate; it is invalid while charging,
+                // so never present it as "time to full"
                 int remaining = b.getRemainingSeconds();
                 String timeStr = "";
-                if (remaining > 0 && remaining < Integer.MAX_VALUE) {
+                if (!ac && remaining > 0 && remaining < Integer.MAX_VALUE) {
                     int h = remaining / 3600;
                     int m = (remaining % 3600) / 60;
                     if (h > 0) timeStr = h + "h " + m + "m";
                     else timeStr = m + "m";
                 }
 
-                // History trend for status line - must capture status string and set on FX thread
-                String trend = historyService.getTrendLabel();
-                String drain = "";
-                String fStatus;
+                // History trend - ONE read per tick (BatteryHistoryService caches parsed entries)
                 int drained = historyService.drainedInLastHour();
+                String trend = drained > 0
+                        ? "Battery drained " + drained + "% in the last hour"
+                        : "Battery stable in last hour";
+                String drain;
+                String fStatus;
                 if (ac && ch && pct >= 0) {
                     if (pct >= 98) fStatus = "Fully charged";
-                    else if (!timeStr.isEmpty()) fStatus = "Charging - full in " + timeStr;
                     else fStatus = "Charging";
                     drain = pct >= 0 ? "Charging" : "";
                 } else {
@@ -145,24 +176,16 @@ public class MainViewModel {
                     }
                 }
 
-                // Auto-saver when unplugged (not plugged in) - real battery saver
-                boolean shouldAutoEnable = false;
-                if (wasAcOnline && !ac) {
-                    // Just unplugged - enable saver if not already
-                    shouldAutoEnable = true;
-                }
-                if (!ac && wasAcOnline) {
-                    // Just plugged in - disable saver if enabled
-                    try {
-                        powerSaverService.disable();
-                        System.out.println("Auto-saver: disabled Power Saver on AC reconnect");
-                    } catch (Exception ignored) {}
-                }
+                // Auto-saver AC transitions.
+                // Note: justUnplugged = (was AC, now battery); justPluggedIn = (was battery, now AC).
+                boolean justUnplugged = wasAcOnlineKnown && wasAcOnline && !ac;
+                boolean justPluggedIn = wasAcOnlineKnown && !wasAcOnline && ac;
+                wasAcOnlineKnown = true;
                 wasAcOnline = ac;
-                if (shouldAutoEnable) {
+                if (justUnplugged) {
                     try {
                         String cur2 = powerPlanService.getActivePlanGuid();
-                        boolean isAlreadySaver = cur2 != null && cur2.equalsIgnoreCase(PowerPlanService.POWER_SAVER);
+                        boolean isAlreadySaver = powerPlanService.isPowerSaverGuid(cur2);
                         if (!isAlreadySaver) {
                             powerSaverService.enable(config.dimPercent);
                             System.out.println("Auto-saver: enabled Power Saver on unplug");
@@ -170,26 +193,41 @@ public class MainViewModel {
                     } catch (Exception e) {
                         System.err.println("Auto-saver failed: " + e.getMessage());
                     }
+                } else if (justPluggedIn) {
+                    try {
+                        if (powerSaverService.isActive()) {
+                            powerSaverService.disable();
+                            System.out.println("Auto-saver: disabled Power Saver on AC reconnect");
+                        }
+                    } catch (Exception ignored) {}
                 }
 
-                // Sudden drop detection (live, every poll)
+                // Sudden drop detection: maintain a rolling baseline while on battery;
+                // alert when the battery fell >= 3% within a 5-minute window. Baseline is
+                // armed even at app start on battery (first poll seeds it).
                 String suddenMsg = null;
-                if (!ac && pct >= 0 && lastPctForDrop >= 0) {
+                long nowMs = System.currentTimeMillis();
+                if (ac || pct < 0) {
+                    // While charging/unknown, keep the baseline fresh
+                    lastPctForDrop = pct;
+                    lastDropCheckMs = nowMs;
+                } else if (lastPctForDrop < 0) {
+                    lastPctForDrop = pct;
+                    lastDropCheckMs = nowMs;
+                } else {
                     int drop = lastPctForDrop - pct;
-                    long nowMs = System.currentTimeMillis();
-                    if (drop >= 3 && (nowMs - lastDropCheckMs) < 5*60*1000) {
-                        // Drop >=3% within 5 min - sudden
+                    long windowMs = nowMs - lastDropCheckMs;
+                    if (drop >= 3 && windowMs <= 5 * 60 * 1000L) {
                         Map<String, Double> top = ProcessUsageService.getTopCpuProcesses(1);
                         String topName = top.isEmpty() ? "unknown" : top.keySet().iterator().next();
-                        suddenMsg = String.format("Sudden drop %d%% detected! Top drainer: %s (%.1f%% CPU)", drop, topName, top.isEmpty()?0:top.values().iterator().next());
-                    }
-                    if (nowMs - lastDropCheckMs > 5*60*1000) {
+                        suddenMsg = String.format("Sudden drop %d%% detected! Top drainer: %s (%.1f%% CPU)", drop, topName, top.isEmpty() ? 0 : top.values().iterator().next());
+                        lastPctForDrop = pct;
+                        lastDropCheckMs = nowMs;
+                    } else if (drop < 0 || windowMs > 5 * 60 * 1000L) {
+                        // Level rose again or window expired without a qualifying drop - re-arm
                         lastPctForDrop = pct;
                         lastDropCheckMs = nowMs;
                     }
-                } else if (ac) {
-                    lastPctForDrop = pct;
-                    lastDropCheckMs = System.currentTimeMillis();
                 }
                 final String fSudden = suddenMsg;
 
@@ -219,35 +257,44 @@ public class MainViewModel {
                     isSaver = powerSaverService.isActiveReal();
                 }
                 final boolean fSaver = isSaver;
+                // Only trust "on battery" once the battery state is CONFIRMED (pct >= 0).
+                // The pre-first-poll default (ac=false, pct=-1) must not count as
+                // "on battery" - that briefly auto-throttled desktops/AC machines at startup.
+                boolean onBatteryConfirmed = !fAc && fPct >= 0;
                 // Eco throttling (EnergyStarX-like, any laptop) - update based on battery + saver
                 try {
                     if (ecoService != null) {
-                        boolean isOnBattery = !fAc;
-                        ecoService.updateThrottleStatus(isOnBattery, fSaver);
+                        ecoService.updateThrottleStatus(onBatteryConfirmed, fSaver);
                     }
                 } catch (Exception e) {
                     System.err.println("Eco update failed: " + e.getMessage());
                 }
-                final String fEco = ecoService != null ? "Eco: " + ecoService.getStatus() + (ecoService.isPaused() ? " (paused)" : "") + (ecoService.isThrottleWhenPluggedIn() ? " [plugged throttles]" : "") : "Eco: idle";
-// EcoQoS Background Throttling (Efficiency Mode) - update based on battery + power saver mode
-                boolean ecoQosRunning = ecoQosThrottleService.isEnabled();
-                int ecoQosCount = ecoQosThrottleService.getThrottledCount();
-                String ecoQosStatus = (ecoQosRunning ? "EcoQos: " + ecoQosCount + " throttled" : "EcoQos: off");
-                // Start/stop EcoQos based on battery + power saver preference: throttle on battery OR when Power Saver is on
+                // EcoQoS Background Throttling (Efficiency Mode) - auto-managed:
+                // throttle on battery or when Power Saver is on, but only auto-stop
+                // what we auto-started (a manual "ON" from the user is authoritative
+                // and survives AC transitions until they turn it off).
                 try {
-                    // Only automatically start if the user hasn't explicitly disabled it
-                    if (this.ecoQosEnabled.get() && (!fAc || fSaver)) {
+                    boolean wantAuto = this.ecoQosEnabled.get() && (onBatteryConfirmed || fSaver);
+                    if (wantAuto) {
                         if (!ecoQosThrottleService.isEnabled()) {
                             ecoQosThrottleService.start();
+                            ecoQosAutoStarted = true;
                         }
                     } else {
-                        if (ecoQosThrottleService.isEnabled()) {
+                        if (ecoQosAutoStarted && ecoQosThrottleService.isEnabled()) {
                             ecoQosThrottleService.stop();
                         }
+                        ecoQosAutoStarted = false;
                     }
-                } catch (Exception ignored) {}
-                final String fEcoQos = ecoQosStatus;
+                } catch (Exception e) {
+                    System.err.println("EcoQoS auto-manage failed: " + e.getMessage());
+                }
+                // Notify the user about a sudden drop (not just the console)
+                if (suddenMsg != null && suddenDropListener != null) {
+                    try { suddenDropListener.accept(suddenMsg); } catch (Exception ignored) {}
+                }
                 int tc = ecoQosThrottleService != null ? ecoQosThrottleService.getThrottledCount() : 0;
+                final boolean fEcoQosRunning = ecoQosThrottleService.isEnabled();
                 Platform.runLater(() -> {
                     batteryPercent.set(fPct);
                     acOnline.set(fAc);
@@ -257,16 +304,15 @@ public class MainViewModel {
                     timeRemaining.set(fTime);
                     powerSaverOn.set(fSaver);
                     throttledCount.set(tc);
-                    ecoStatus.set(fEco + " | " + fEcoQos);
+                    ecoQosRunning.set(fEcoQosRunning);
                     if (fSudden != null) {
-                        System.out.println("Sudden drop: " + fSudden);
-                        // Also surface as drainLabel for 30s
+                        // Also surface as drainLabel until the next poll overwrites it
                         drainLabel.set(fSudden);
                     }
                 });
 
-                // Processes every 10s
-                if (System.currentTimeMillis() % 10000 < 5500) {
+                // Processes every other poll (~10s) - deterministic counter, not clock phase
+                if (pollTick % 2 == 0) {
                     Map<String, Double> top = ProcessUsageService.getTopCpuProcesses(5);
                     Platform.runLater(() -> {
                         processRows.clear();
@@ -284,7 +330,25 @@ public class MainViewModel {
         }, 0, 5, TimeUnit.SECONDS);
     }
 
+    /**
+     * Toggle Power Saver. Runs on a background thread - enable() spawns multiple
+     * PowerShell/powercfg processes (seconds) and must never block the FX thread.
+     * Double-clicks while a toggle is in flight are ignored.
+     */
     public void togglePowerSaver() {
+        if (!toggleInFlight.compareAndSet(false, true)) return;
+        Thread t = new Thread(() -> {
+            try {
+                doTogglePowerSaver();
+            } finally {
+                toggleInFlight.set(false);
+            }
+        }, "toggle-power-saver");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void doTogglePowerSaver() {
         try {
             String cur = powerPlanService.getActivePlanGuid();
             boolean isSaver = powerPlanService.isPowerSaverGuid(cur);
@@ -296,16 +360,25 @@ public class MainViewModel {
             // Re-query after toggle to confirm
             String after = powerPlanService.getActivePlanGuid();
             boolean isNowSaver = powerPlanService.isPowerSaverGuid(after);
-            Platform.runLater(() -> powerSaverOn.set(isNowSaver));
+            Platform.runLater(() -> {
+                powerSaverOn.set(isNowSaver);
+                actionError.set("");
+            });
         } catch (SecurityException se) {
             System.err.println("PowerSaver toggle blocked by security: " + se.getMessage());
-            Platform.runLater(() -> powerSaverOn.set(false));
+            Platform.runLater(() -> {
+                powerSaverOn.set(false);
+                actionError.set("Power plan change blocked (security policy): " + se.getMessage());
+            });
         } catch (Exception e) {
             System.err.println("PowerSaver toggle failed: " + e.getMessage());
             try {
                 String cur2 = powerPlanService.getActivePlanGuid();
                 boolean isSaver2 = powerPlanService.isPowerSaverGuid(cur2);
-                Platform.runLater(() -> powerSaverOn.set(isSaver2));
+                Platform.runLater(() -> {
+                    powerSaverOn.set(isSaver2);
+                    actionError.set("Power Saver toggle failed: " + e.getMessage());
+                });
             } catch (Exception ignored) {}
         }
     }
@@ -329,8 +402,10 @@ public class MainViewModel {
                 Platform.runLater(() -> {
                     healthText.set(txt);
                     healthDetail.set(detail);
-                    healthPercent.set(hpVal);
+                    // healthShort FIRST: the Health tab reads it from a healthPercent
+                    // listener, so it must be fresh before the listener fires
                     healthShort.set(shortTxt);
+                    healthPercent.set(hpVal);
                     healthLoading.set(false);
                 });
             } catch (Exception ex) {
@@ -376,13 +451,52 @@ public class MainViewModel {
     public IntegerProperty healthPercentProperty() { return healthPercent; }
     public StringProperty healthShortProperty() { return healthShort; }
     public StringProperty timeRemainingProperty() { return timeRemaining; }
+    public StringProperty actionErrorProperty() { return actionError; }
     public BooleanProperty ecoQosEnabledProperty() { return ecoQosEnabled; }
+    public BooleanProperty ecoQosRunningProperty() { return ecoQosRunning; }
     public IntegerProperty throttledCountProperty() { return throttledCount; }
+
+    public PowerSaverModeService getPowerSaverService() { return powerSaverService; }
+
+    /** Push a new user exclusion list (comma-separated exes) into the EcoQoS service. */
+    public void updateEcoQosWhitelist(String csv) {
+        if (ecoQosThrottleService != null) ecoQosThrottleService.setUserWhitelist(csv);
+    }
+
+    /** Set by Main: receives sudden-drop messages for user-visible notification. */
+    public void setSuddenDropListener(Consumer<String> listener) {
+        this.suddenDropListener = listener;
+    }
+
+    /**
+     * Manual EcoQoS toggle (Status button / Settings save). Authoritative: the
+     * poller never auto-stops a manually-started service. ON starts the engine
+     * immediately (even on AC - the user asked for it); OFF stops it and turns
+     * the master switch off (no auto-restart until re-enabled).
+     */
     public void toggleEcoQos(boolean enable) {
         ecoQosEnabled.set(enable);
+        ecoQosAutoStarted = false; // manual action - no longer "auto" state
         if (ecoQosThrottleService != null) {
-            if (enable) ecoQosThrottleService.start();
-            else ecoQosThrottleService.stop();
+            if (enable) {
+                if (!ecoQosThrottleService.isEnabled()) {
+                    // Start off the FX thread: it opens process handles system-wide
+                    Thread t = new Thread(() -> {
+                        ecoQosThrottleService.start();
+                        // Reflect reality as soon as the start completes (don't wait for the next poll tick)
+                        Platform.runLater(() -> ecoQosRunning.set(ecoQosThrottleService.isEnabled()));
+                    }, "ecoqos-toggle");
+                    t.setDaemon(true);
+                    t.start();
+                }
+            } else {
+                Thread t = new Thread(() -> {
+                    ecoQosThrottleService.stop();
+                    Platform.runLater(() -> ecoQosRunning.set(ecoQosThrottleService.isEnabled()));
+                }, "ecoqos-toggle");
+                t.setDaemon(true);
+                t.start();
+            }
         }
     }
     public ObservableList<ProcessRow> getProcessRows() { return processRows; }

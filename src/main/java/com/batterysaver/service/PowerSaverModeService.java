@@ -3,11 +3,14 @@ package com.batterysaver.service;
 public class PowerSaverModeService {
     private final PowerPlanService powerPlanService = new PowerPlanService();
     private final BrightnessService brightnessService = new BrightnessService();
+    // enable()/disable() run concurrently from the vm-poller (auto-saver) and the
+    // manual-toggle worker thread - synchronize both so the saved restore state
+    // (previousPlanGuid/previousBrightness) can never be interleaved/lost
     private String previousPlanGuid;
     private int previousBrightness = -1;
-    private boolean active = false;
+    private volatile boolean active = false;
 
-    public void enable(int dimToPercent) {
+    public synchronized void enable(int dimToPercent) {
         try {
             previousPlanGuid = powerPlanService.getActivePlanGuid();
             if (previousPlanGuid != null && powerPlanService.isPowerSaverGuid(previousPlanGuid)) {
@@ -30,7 +33,7 @@ public class PowerSaverModeService {
         active = true;
     }
 
-    public void disable() {
+    public synchronized void disable() {
         if (!active && previousPlanGuid == null) return;
         try {
             if (previousPlanGuid != null) powerPlanService.setActivePlan(previousPlanGuid);

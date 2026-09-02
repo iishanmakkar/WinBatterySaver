@@ -1,5 +1,6 @@
 package com.batterysaver.service;
 
+import com.batterysaver.constants.AppConstants;
 import com.batterysaver.util.PortableMode;
 
 import java.nio.file.Files;
@@ -16,12 +17,10 @@ public class SettingsService {
     private static final String NODE = "BatterySaver";
 
     public static class Config {
-        public int lowBatteryThreshold = 20;
+        public int lowBatteryThreshold = 20;   // used by the low-battery toast
         public int criticalBatteryThreshold = 10;
         public int dimPercent = 40;
         public boolean autoStart = true;
-        public String powerPlanOnBattery = "Power Saver";
-        public String powerPlanOnAC = "Balanced";
         // Phase 7-9 new fields
         public int chargeLimitPercent = 80; // 60-100
         public boolean chargeLimitEnabled = true;
@@ -30,10 +29,32 @@ public class SettingsService {
         public boolean idleDimmingEnabled = true;
         public int idleMinutes = 2;
         public boolean updateCheckEnabled = false; // 0-cost: disabled by default
-        public String updateRepoSlug = "REPLACE_ME/BatterySaver"; // e.g. user/repo
+        public String updateRepoSlug = AppConstants.GITHUB_REPO; // default from About/GitHub constant
         public String theme = "Dark"; // "Dark" or "Light"
         public boolean ecoQosEnabled = true; // EnergyStar EcoQoS throttling
         public String ecoQosWhitelistStr = "logioptionsplus.exe, steam.exe, discord.exe, obs64.exe";
+
+        /** Field-by-field copy - UI edits a copy so the live config is only ever
+         *  replaced atomically via SettingsService.save() + vm.updateConfig(). */
+        public Config copy() {
+            Config c = new Config();
+            c.lowBatteryThreshold = lowBatteryThreshold;
+            c.criticalBatteryThreshold = criticalBatteryThreshold;
+            c.dimPercent = dimPercent;
+            c.autoStart = autoStart;
+            c.chargeLimitPercent = chargeLimitPercent;
+            c.chargeLimitEnabled = chargeLimitEnabled;
+            c.hotkeyModifiers = hotkeyModifiers;
+            c.hotkeyVk = hotkeyVk;
+            c.idleDimmingEnabled = idleDimmingEnabled;
+            c.idleMinutes = idleMinutes;
+            c.updateCheckEnabled = updateCheckEnabled;
+            c.updateRepoSlug = updateRepoSlug;
+            c.theme = theme;
+            c.ecoQosEnabled = ecoQosEnabled;
+            c.ecoQosWhitelistStr = ecoQosWhitelistStr;
+            return c;
+        }
     }
 
     private static Preferences prefs = Preferences.userNodeForPackage(SettingsService.class).node(NODE);
@@ -48,8 +69,6 @@ public class SettingsService {
         c.criticalBatteryThreshold = prefs.getInt("criticalBatteryThreshold", 10);
         c.dimPercent = prefs.getInt("dimPercent", 40);
         c.autoStart = prefs.getBoolean("autoStart", true);
-        c.powerPlanOnBattery = prefs.get("powerPlanOnBattery", "Power Saver");
-        c.powerPlanOnAC = prefs.get("powerPlanOnAC", "Balanced");
         c.chargeLimitPercent = prefs.getInt("chargeLimitPercent", 80);
         c.chargeLimitEnabled = prefs.getBoolean("chargeLimitEnabled", true);
         c.hotkeyModifiers = prefs.getInt("hotkeyModifiers", 0x0003);
@@ -57,7 +76,7 @@ public class SettingsService {
         c.idleDimmingEnabled = prefs.getBoolean("idleDimmingEnabled", true);
         c.idleMinutes = prefs.getInt("idleMinutes", 2);
         c.updateCheckEnabled = prefs.getBoolean("updateCheckEnabled", false);
-        c.updateRepoSlug = prefs.get("updateRepoSlug", "REPLACE_ME/BatterySaver");
+        c.updateRepoSlug = prefs.get("updateRepoSlug", AppConstants.GITHUB_REPO);
         c.theme = prefs.get("theme", "Dark");
         c.ecoQosEnabled = prefs.getBoolean("ecoQosEnabled", true);
         c.ecoQosWhitelistStr = prefs.get("ecoQosWhitelistStr", "logioptionsplus.exe, steam.exe, discord.exe, obs64.exe");
@@ -87,8 +106,6 @@ public class SettingsService {
         prefs.putInt("criticalBatteryThreshold", cfg.criticalBatteryThreshold);
         prefs.putInt("dimPercent", cfg.dimPercent);
         prefs.putBoolean("autoStart", cfg.autoStart);
-        prefs.put("powerPlanOnBattery", cfg.powerPlanOnBattery);
-        prefs.put("powerPlanOnAC", cfg.powerPlanOnAC);
         prefs.putInt("chargeLimitPercent", cfg.chargeLimitPercent);
         prefs.putBoolean("chargeLimitEnabled", cfg.chargeLimitEnabled);
         prefs.putInt("hotkeyModifiers", cfg.hotkeyModifiers);
@@ -133,14 +150,13 @@ public class SettingsService {
     }
 
     // Minimal JSON without external dep - only flat fields, no nesting.
-    private static String toJson(Config c) {
+    // Package-private for round-trip testing.
+    static String toJson(Config c) {
         return "{\n" +
                 "  \"lowBatteryThreshold\": " + c.lowBatteryThreshold + ",\n" +
                 "  \"criticalBatteryThreshold\": " + c.criticalBatteryThreshold + ",\n" +
                 "  \"dimPercent\": " + c.dimPercent + ",\n" +
                 "  \"autoStart\": " + c.autoStart + ",\n" +
-                "  \"powerPlanOnBattery\": \"" + esc(c.powerPlanOnBattery) + "\",\n" +
-                "  \"powerPlanOnAC\": \"" + esc(c.powerPlanOnAC) + "\",\n" +
                 "  \"chargeLimitPercent\": " + c.chargeLimitPercent + ",\n" +
                 "  \"chargeLimitEnabled\": " + c.chargeLimitEnabled + ",\n" +
                 "  \"hotkeyModifiers\": " + c.hotkeyModifiers + ",\n" +
@@ -155,15 +171,13 @@ public class SettingsService {
                 "}";
     }
 
-    private static Config fromJson(String json) {
+    static Config fromJson(String json) {
         try {
             Config c = new Config();
             c.lowBatteryThreshold = extractInt(json, "lowBatteryThreshold", c.lowBatteryThreshold);
             c.criticalBatteryThreshold = extractInt(json, "criticalBatteryThreshold", c.criticalBatteryThreshold);
             c.dimPercent = extractInt(json, "dimPercent", c.dimPercent);
             c.autoStart = extractBool(json, "autoStart", c.autoStart);
-            c.powerPlanOnBattery = extractString(json, "powerPlanOnBattery", c.powerPlanOnBattery);
-            c.powerPlanOnAC = extractString(json, "powerPlanOnAC", c.powerPlanOnAC);
             c.chargeLimitPercent = extractInt(json, "chargeLimitPercent", c.chargeLimitPercent);
             c.chargeLimitEnabled = extractBool(json, "chargeLimitEnabled", c.chargeLimitEnabled);
             c.hotkeyModifiers = extractInt(json, "hotkeyModifiers", c.hotkeyModifiers);

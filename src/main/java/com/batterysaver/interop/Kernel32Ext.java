@@ -69,6 +69,9 @@ public interface Kernel32Ext extends StdCallLibrary {
     /** Close a process handle opened by OpenProcess. */
     boolean CloseHandle(com.sun.jna.platform.win32.WinNT.HANDLE hProcess);
 
+    /** Free a buffer returned by PowerGetActiveScheme (maps HLOCAL as Pointer). */
+    com.sun.jna.Pointer LocalFree(com.sun.jna.Pointer hMem);
+
     /** EcoQoS execution speed throttling class index — stable enum value per
      *  processthreadsapi.h, matching EnergyStarX implementation. */
     int ProcessPowerThrottling = 4;

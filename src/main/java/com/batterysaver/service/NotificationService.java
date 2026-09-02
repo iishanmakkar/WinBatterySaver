@@ -8,12 +8,16 @@ import java.awt.image.BufferedImage;
 public class NotificationService {
     private TrayIcon icon;
     private SystemTray tray;
+    // Whether WE added the private blank icon (vs reusing TrayManager's icon).
+    // remove() must only remove what we added, otherwise heuristics can leave
+    // the blank icon in the tray or remove the shared one.
+    private volatile boolean addedPrivateIcon = false;
 
     public NotificationService() {
         try {
             if (SystemTray.isSupported()) {
                 tray = SystemTray.getSystemTray();
-                icon = new TrayIcon(new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), "WBS");
+                icon = new TrayIcon(new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), "WBS-notification");
                 icon.setImageAutoSize(true);
             } else {
                 tray = null;
@@ -26,12 +30,13 @@ public class NotificationService {
     }
 
     private TrayIcon resolveIcon() {
-        // Prefer existing WBS icon from TrayManager if present (avoid duplicate invisible icons)
+        // Prefer the shared TrayManager icon (tooltip starts with "WBS - ") over our
+        // private blank one, avoiding duplicate/invisible tray icons.
         try {
             if (SystemTray.isSupported()) {
                 SystemTray t = SystemTray.getSystemTray();
                 for (TrayIcon ti : t.getTrayIcons()) {
-                    if (ti.getToolTip() != null && ti.getToolTip().contains("WBS")) {
+                    if (ti != icon && ti.getToolTip() != null && ti.getToolTip().startsWith("WBS - ")) {
                         return ti;
                     }
                 }
@@ -41,30 +46,53 @@ public class NotificationService {
     }
 
     public void showInfo(String title, String message) {
-        TrayIcon target = resolveIcon();
-        if (target != null && SystemTray.isSupported()) {
+        showTrayOrFallback(title, message, TrayIcon.MessageType.INFO);
+    }
+
+    public void showWarning(String title, String message) {
+        showTrayOrFallback(title, message, TrayIcon.MessageType.WARNING);
+    }
+
+    /**
+     * All AWT tray access (scanning icons, adding the private icon, displaying the
+     * balloon) happens on the EDT - callers are background poller threads and AWT
+     * tray APIs are not guaranteed thread-safe off-EDT.
+     */
+    private void showTrayOrFallback(String title, String message, TrayIcon.MessageType type) {
+        if (SystemTray.isSupported()) {
             try {
-                SystemTray t = SystemTray.getSystemTray();
-                // If target is our private icon and not yet added, try to add it on EDT
-                if (target == icon) {
+                java.awt.EventQueue.invokeAndWait(() -> {
                     try {
-                        if (!java.util.Arrays.asList(t.getTrayIcons()).contains(icon)) {
-                            // Must add on EDT
-                            if (java.awt.EventQueue.isDispatchThread()) t.add(icon);
-                            else java.awt.EventQueue.invokeAndWait(() -> {
-                                try { t.add(icon); } catch (Exception ignored) {}
-                            });
+                        TrayIcon target = resolveIcon();
+                        if (target != null) {
+                            SystemTray t = SystemTray.getSystemTray();
+                            if (target == icon) {
+                                try {
+                                    if (!java.util.Arrays.asList(t.getTrayIcons()).contains(icon)) {
+                                        t.add(icon);
+                                        addedPrivateIcon = true;
+                                    }
+                                } catch (IllegalArgumentException ignored) {}
+                            }
+                            target.displayMessage(title, message, type);
+                        } else {
+                            fallbackDialog(title, message);
                         }
-                    } catch (IllegalArgumentException ignored) {}
-                }
-                target.displayMessage(title, message, TrayIcon.MessageType.INFO);
-                System.out.println("Notification: " + title + " - " + message);
+                    } catch (Exception e) {
+                        System.err.println("Tray display failed: " + e.getMessage());
+                        fallbackDialog(title, message);
+                    }
+                });
                 return;
             } catch (Exception e) {
-                System.err.println("Tray display failed: " + e.getMessage());
+                System.err.println("Notification dispatch failed: " + e.getMessage());
             }
         }
-        // Fallback to JavaFX Alert on FX thread, Swing dialog on EDT
+        fallbackDialog(title, message);
+    }
+
+    /** Fallback to JavaFX Alert on FX thread, Swing dialog on EDT. */
+    private void fallbackDialog(String title, String message) {
         try {
             if (Platform.isFxApplicationThread()) {
                 javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.INFORMATION, message, javafx.scene.control.ButtonType.OK);
@@ -87,59 +115,16 @@ public class NotificationService {
         }
     }
 
-    public void showWarning(String title, String message) {
-        TrayIcon target = resolveIcon();
-        if (target != null && SystemTray.isSupported()) {
-            try {
-                target.displayMessage(title, message, TrayIcon.MessageType.WARNING);
-                return;
-            } catch (Exception ignored) {}
-        }
-        try {
-            if (Platform.isFxApplicationThread()) {
-                javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.WARNING, message, javafx.scene.control.ButtonType.OK);
-                a.setTitle(title);
-                a.setHeaderText(title);
-                a.showAndWait();
-            } else {
-                Platform.runLater(() -> {
-                    javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.WARNING, message, javafx.scene.control.ButtonType.OK);
-                    a.setTitle(title);
-                    a.setHeaderText(title);
-                    a.show();
-                });
-            }
-        } catch (Exception ignored) {
-            try { javax.swing.SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(null, message, title, JOptionPane.WARNING_MESSAGE)); }
-            catch (Exception e2) { System.out.println(title + ": " + message); }
-        }
-    }
-
     public void remove() {
-        // Only remove our private icon if it was added and is not the shared WBS icon
+        // Remove ONLY the private icon if we actually added it - the shared
+        // TrayManager icon is owned and removed by TrayManager.
         try {
-            if (tray != null && icon != null) {
-                boolean isShared = false;
-                for (TrayIcon ti : tray.getTrayIcons()) {
-                    if (ti == icon && ti.getToolTip() != null && ti.getToolTip().contains("WBS")) {
-                        // This is shared TrayManager icon - don't remove here; TrayManager owns it
-                        // But our icon tooltip is "WBS" too, so ambiguous - check if we added duplicate?
-                        // If multiple WBS icons, keep the first one
-                    }
-                }
-                // Try to remove only if we own it and it's still there
-                if (java.util.Arrays.asList(tray.getTrayIcons()).contains(icon)) {
-                    // If there are 2 WBS icons, remove the private one (the last added)
-                    // Heuristic: if count >1, remove ours
-                    if (tray.getTrayIcons().length > 1) {
-                        tray.remove(icon);
-                    } else {
-                        // Single icon - likely TrayManager's, don't remove (let TrayManager handle)
-                        // But if TrayManager not yet installed, this is our only icon, safe to remove on exit
-                        // We will keep it until TrayManager removes
-                    }
-                }
+            if (addedPrivateIcon && tray != null && icon != null
+                    && java.util.Arrays.asList(tray.getTrayIcons()).contains(icon)) {
+                tray.remove(icon);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {} finally {
+            addedPrivateIcon = false;
+        }
     }
 }

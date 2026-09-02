@@ -16,13 +16,10 @@ import com.sun.jna.win32.W32APIOptions;
 public interface User32Ext extends StdCallLibrary {
     User32Ext INSTANCE = Native.load("user32", User32Ext.class, W32APIOptions.DEFAULT_OPTIONS);
 
-    // Hot-key modifier flags
+    // Hot-key modifier flags (used by HotkeyService config display)
     int MOD_CONTROL = 0x0002;
     int MOD_ALT       = 0x0001;
     int MOD_SHIFT     = 0x0004;
-
-    boolean RegisterHotKey(long hWnd, int id, int fsModifiers, int vk);
-    boolean UnregisterHotKey(long hWnd, int id);
 
     // Idle detection - correct signature: BOOL GetLastInputInfo(PLASTINPUTINFO)
     boolean GetLastInputInfo(LastInputInfo plii);
@@ -37,4 +34,12 @@ public interface User32Ext extends StdCallLibrary {
      *  @return thread ID (DWORD)
      */
     int GetWindowThreadProcessId(com.sun.jna.platform.win32.WinDef.HWND hWnd, com.sun.jna.ptr.IntByReference lpidProcess);
+
+    // --- Window-state queries (missing from JNA's User32 in this version) ---
+
+    /** Is the window minimized (iconic)? */
+    boolean IsIconic(com.sun.jna.platform.win32.WinDef.HWND hWnd);
+
+    /** WS_EX_TOOLWINDOW extended style bit (tool windows/tooltips). */
+    int WS_EX_TOOLWINDOW = 0x00000080;
 }

@@ -27,7 +27,11 @@ public class TrayManager {
     private TrayIcon icon;
     private CheckboxMenuItem powerItem;
     private Menu chargeMenu;
-    private Label tooltipUpdater; // dummy
+    // Coalesce bursts of property changes into one EDT update and skip
+    // re-rendering the icon image when pct/charging haven't changed.
+    private final java.util.concurrent.atomic.AtomicBoolean updateQueued = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile int lastIconPct = Integer.MIN_VALUE;
+    private volatile boolean lastIconCharging;
 
     public TrayManager(MainViewModel vm,
                        Runnable onOpenExpanded,
@@ -100,7 +104,8 @@ public class TrayManager {
             MenuItem mi = new MenuItem(v + "%");
             final int val = v;
             mi.addActionListener(e -> {
-                SettingsService.Config cfg = vm.getConfig();
+                // Copy-on-write: mutate a copy, save, then swap the VM config atomically
+                SettingsService.Config cfg = vm.getConfig().copy();
                 cfg.chargeLimitPercent = val;
                 SettingsService.save(cfg);
                 vm.updateConfig(cfg);
@@ -165,24 +170,40 @@ public class TrayManager {
             e.printStackTrace();
         }
 
-        // Bind VM listeners for live update
-        vm.batteryPercentProperty().addListener((o, old, p) -> update());
-        vm.acOnlineProperty().addListener((o, old, v) -> update());
-        vm.chargingProperty().addListener((o, old, v) -> update());
-        vm.powerSaverOnProperty().addListener((o, old, v) -> update());
-        vm.drainLabelProperty().addListener((o, old, v) -> update());
-        vm.statusLineProperty().addListener((o, old, v) -> update());
+        // Bind VM listeners for live update (coalesced - a poll batch fires up to 6 of these)
+        vm.batteryPercentProperty().addListener((o, old, p) -> requestUpdate());
+        vm.acOnlineProperty().addListener((o, old, v) -> requestUpdate());
+        vm.chargingProperty().addListener((o, old, v) -> requestUpdate());
+        vm.powerSaverOnProperty().addListener((o, old, v) -> requestUpdate());
+        vm.drainLabelProperty().addListener((o, old, v) -> requestUpdate());
+        vm.statusLineProperty().addListener((o, old, v) -> requestUpdate());
 
         // Show initial
         update();
     }
 
+    /** Coalesce a burst of property changes into a single EDT update. */
+    private void requestUpdate() {
+        if (icon == null) return;
+        if (updateQueued.compareAndSet(false, true)) {
+            java.awt.EventQueue.invokeLater(() -> {
+                updateQueued.set(false);
+                update();
+            });
+        }
+    }
+
     private void update() {
         if (icon == null) return;
-        // Must be on EDT? TrayIcon is AWT, but we are on FX thread - use EventQueue
         java.awt.EventQueue.invokeLater(() -> {
-            Image img = createBatteryIcon(vm.batteryPercentProperty().get(), vm.chargingProperty().get());
-            icon.setImage(img);
+            int pct = vm.batteryPercentProperty().get();
+            boolean charging = vm.chargingProperty().get();
+            if (pct != lastIconPct || charging != lastIconCharging) {
+                lastIconPct = pct;
+                lastIconCharging = charging;
+                Image img = createBatteryIcon(pct, charging);
+                if (img != null) icon.setImage(img);
+            }
             icon.setToolTip(tooltipText());
             if (icon.getPopupMenu() != null && icon.getPopupMenu().getItemCount() > 0) {
                 // Update header

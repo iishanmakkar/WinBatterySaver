@@ -22,7 +22,7 @@ public class HotkeyService {
     private static final int HOTKEY_ID = 1;
     private static final String CLASS_NAME = "BatterySaverHotkeyWnd";
 
-    private HWND hwnd;
+    private volatile HWND hwnd; // written by pump thread, read by unregister() - must be volatile
     private Thread pumpThread;
     private volatile boolean running = false;
     private WindowProc wndProc; // keep strong ref to avoid GC
@@ -49,6 +49,10 @@ public class HotkeyService {
         running = true;
 
         pumpThread = new Thread(() -> {
+            // Thread-confined: each pump thread owns exactly one window. The shared
+            // `hwnd` field is only published for unregister()'s PostMessage - the
+            // old thread's cleanup must never touch a newer registration's window.
+            HWND localHwnd = null;
             try {
                 HINSTANCE hInst = Kernel32.INSTANCE.GetModuleHandle(null);
 
@@ -83,21 +87,21 @@ public class HotkeyService {
                 // RegisterClassEx may fail if already registered - that's ok
                 User32.INSTANCE.RegisterClassEx(wc);
 
-                hwnd = User32.INSTANCE.CreateWindowEx(
+                localHwnd = User32.INSTANCE.CreateWindowEx(
                         0, CLASS_NAME, "BatterySaverHiddenWnd",
                         0, 0, 0, 0, 0,
                         null, null, hInst, null);
 
-                if (hwnd == null) {
-                    System.err.println("HotkeyService: CreateWindowEx failed: " + Kernel32.INSTANCE.GetLastError());
+                if (localHwnd == null) {
+                    System.err.println("HotkeyService: CreateWindowEx failed");
                     running = false;
                     return;
                 }
+                hwnd = localHwnd; // publish for unregister()'s PostMessage
 
-                boolean ok = User32.INSTANCE.RegisterHotKey(hwnd, HOTKEY_ID, modifiers, vk);
+                boolean ok = User32.INSTANCE.RegisterHotKey(localHwnd, HOTKEY_ID, modifiers, vk);
                 if (!ok) {
-                    int err = Kernel32.INSTANCE.GetLastError();
-                    System.err.println("HotkeyService: RegisterHotKey failed (err=" + err + ") - hotkey already in use?");
+                    System.err.println("HotkeyService: RegisterHotKey failed - hotkey already in use?");
                     // Still run message loop so we can unregister cleanly later
                 }
 
@@ -110,61 +114,46 @@ public class HotkeyService {
                 }
             } catch (Exception e) {
                 System.err.println("HotkeyService pump error: " + e.getMessage());
-                e.printStackTrace();
             } finally {
-                cleanupNative();
+                // Cleanup ONLY this thread's window, on this thread (Windows requires
+                // DestroyWindow from the creating thread)
+                cleanupNative(localHwnd);
+                // Don't clobber a newer registration's published handle
+                if (localHwnd != null && localHwnd.equals(hwnd)) hwnd = null;
             }
         }, "hotkey-pump");
         pumpThread.setDaemon(true);
         pumpThread.start();
     }
 
-    private void cleanupNative() {
+    private void cleanupNative(HWND h) {
+        if (h == null) return;
         try {
-            if (hwnd != null) {
-                // JNA 5.14 UnregisterHotKey takes Pointer, not HWND
-                User32.INSTANCE.UnregisterHotKey(hwnd.getPointer(), HOTKEY_ID);
-                User32.INSTANCE.DestroyWindow(hwnd);
-                hwnd = null;
-            }
-            User32.INSTANCE.UnregisterClass(CLASS_NAME, Kernel32.INSTANCE.GetModuleHandle(null));
+            User32.INSTANCE.UnregisterHotKey(h.getPointer(), HOTKEY_ID);
+            User32.INSTANCE.DestroyWindow(h);
         } catch (Exception ignored) {}
     }
 
     public synchronized void unregister() {
         running = false;
-        if (hwnd != null) {
-            User32.INSTANCE.UnregisterHotKey(hwnd.getPointer(), HOTKEY_ID);
-            // Wake the GetMessage loop
-            User32.INSTANCE.PostMessage(hwnd, WinUser.WM_CLOSE, new WPARAM(0), new LPARAM(0));
+        // WM_CLOSE is dispatched on the pump thread, where WM_DESTROY posts
+        // WM_QUIT to the correct (pump) thread's queue and cleanupNative() runs
+        // on the window-owning thread.
+        HWND h = hwnd;
+        if (h != null) {
+            try { User32.INSTANCE.PostMessage(h, WinUser.WM_CLOSE, new WPARAM(0), new LPARAM(0)); } catch (Exception ignored) {}
         }
-        // Also post quit in case hwnd null
-        User32.INSTANCE.PostQuitMessage(0);
         if (pumpThread != null) {
             pumpThread.interrupt();
             try { pumpThread.join(1000); } catch (InterruptedException ignored) {}
             pumpThread = null;
         }
-        // Ensure native cleanup if thread didn't
-        if (hwnd != null) cleanupNative();
-    }
-
-    // Legacy API delegates to real register with defaults Ctrl+Alt+B
-    public void start() {
-        if (running) return;
-        int mods = WinUser.MOD_CONTROL | WinUser.MOD_ALT;
-        int vk = 0x42; // 'B'
-        // Try to load from SettingsService if available
-        try {
-            SettingsService.Config cfg = SettingsService.load();
-            mods = cfg.hotkeyModifiers;
-            vk = cfg.hotkeyVk;
-        } catch (Exception ignored) {}
-        register(mods, vk, onPress != null ? onPress : () -> {});
-    }
-
-    public void stop() {
-        unregister();
+        // Last resort if the pump thread died without cleaning up its own window
+        HWND leftover = hwnd;
+        if (leftover != null) {
+            cleanupNative(leftover);
+            hwnd = null;
+        }
     }
 
     public boolean isRunning() { return running; }

@@ -1,0 +1,92 @@
+package com.batterysaver.service;
+
+import com.sun.jna.platform.win32.Advapi32Util;
+import com.sun.jna.platform.win32.WinReg;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Autostart verification against the REAL HKCU Run key (the exact mechanism the
+ * Settings "Auto-start" checkbox uses). Restores any pre-existing registration
+ * afterwards so a user's real setting is never lost by running the tests.
+ */
+@EnabledOnOs(OS.WINDOWS)
+public class StartupServiceTest {
+
+    private static final String KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    private static final String VALUE = "WindowsBatterySaver";
+    private static final String LEGACY = "BatterySaver";
+
+    private final StartupService ss = new StartupService();
+
+    @AfterEach
+    void restorePriorState() {
+        String prior = ss.getRegisteredCommand();
+        if (prior != null) {
+            Advapi32Util.registrySetStringValue(WinReg.HKEY_CURRENT_USER, KEY, VALUE, prior);
+        } else {
+            ss.disable();
+        }
+    }
+
+    @Test
+    void enableDisableRoundTrip() {
+        // clean slate
+        ss.disable();
+        assertFalse(ss.isEnabled(), "must start disabled after disable()");
+
+        String exe = ProcessHandle.current().info().command().orElse("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe");
+        ss.enable(exe);
+        assertTrue(ss.isEnabled(), "must be enabled after enable()");
+
+        String cmd = ss.getRegisteredCommand();
+        assertNotNull(cmd, "registered command must be readable");
+        assertTrue(cmd.startsWith("\""), "exe path must be quoted (spaces-safe): " + cmd);
+        assertTrue(cmd.endsWith("--minimized"), "must launch minimized to tray: " + cmd);
+        assertTrue(cmd.contains(exe), "registered command must contain the exe path: " + cmd);
+        assertEquals("\"" + exe + "\" --minimized", cmd, "exact expected format");
+        // the value the OS will actually launch at logon:
+        assertEquals(cmd, Advapi32Util.registryGetStringValue(WinReg.HKEY_CURRENT_USER, KEY, VALUE),
+                "registry value must match getRegisteredCommand()");
+
+        ss.disable();
+        assertFalse(ss.isEnabled(), "must be disabled after disable()");
+        assertFalse(Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, VALUE),
+                "registry value must be gone after disable()");
+    }
+
+    @Test
+    void enableCleansUpLegacyEntry() {
+        // simulate an entry written by an older build of the app
+        Advapi32Util.registrySetStringValue(WinReg.HKEY_CURRENT_USER, KEY, LEGACY,
+                "\"C:\\legacy\\BatterySaver.exe\" --minimized");
+        try {
+            String exe = ProcessHandle.current().info().command().orElse("C:\\x\\WindowsBatterySaver.exe");
+            ss.enable(exe);
+            assertFalse(Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, KEY, LEGACY),
+                    "legacy 'BatterySaver' entry must be removed by enable() (no double autostart)");
+            assertTrue(ss.isEnabled());
+        } finally {
+            ss.disable();
+        }
+    }
+
+    @Test
+    void isEnabledDetectsLegacyEntryOnly() {
+        ss.disable();
+        try {
+            Advapi32Util.registrySetStringValue(WinReg.HKEY_CURRENT_USER, KEY, LEGACY,
+                    "\"C:\\legacy\\BatterySaver.exe\" --minimized");
+            assertTrue(ss.isEnabled(), "isEnabled must also detect the legacy entry");
+        } finally {
+            ss.disable();
+        }
+    }
+}

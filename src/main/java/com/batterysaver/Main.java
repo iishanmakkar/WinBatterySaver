@@ -2,6 +2,7 @@ package com.batterysaver;
 
 import com.batterysaver.constants.AppConstants;
 import com.batterysaver.service.*;
+import com.batterysaver.util.ElevationUtil;
 import com.batterysaver.util.PortableMode;
 import com.batterysaver.util.SingleInstanceGuard;
 import com.batterysaver.view.ExpandedView;
@@ -78,9 +79,12 @@ public class Main extends Application {
         ecoService = new EcoService();
         try { ecoService.initialize(); } catch (Exception e) { System.err.println("Eco init failed: " + e.getMessage()); }
 
-        // EcoQoS Background Throttling (Efficiency Mode) - Windows EcoQoS, same mechanism as Task Manager green leaf
+        // EcoQoS Background Throttling (Efficiency Mode) - Windows EcoQoS, same mechanism as Task Manager green leaf.
+        // NOT started here: the vm-poller auto-starts it on its first tick (immediate) when
+        // the SAVED setting allows it and we're on battery / Power Saver - so a user who
+        // disabled EcoQoS in Settings never gets throttling after a restart.
         ecoQosThrottleService = new EcoQosThrottleService();
-        try { ecoQosThrottleService.start(); } catch (Exception e) { System.err.println("EcoQos init failed: " + e.getMessage()); }
+        ecoQosThrottleService.setUserWhitelist(cfg.ecoQosWhitelistStr);
 
 // ViewModel - now with EcoService and EcoQosThrottleService for real-time throttling
         viewModel = new MainViewModel(cfg, historyService, healthService, powerSaver, msService, ecoService, ecoQosThrottleService);
@@ -91,7 +95,9 @@ public class Main extends Application {
         // Expanded view (main window)
         expandedView = new ExpandedView(viewModel, historyService, healthService,
                 this::hideToTray,
-                this::showExpanded);
+                this::showExpanded,
+                this::applySettingsLive,
+                this::restartAsAdministrator);
 
         expandedStage = expandedView.createStage();
         windowCoordinator.setStage(expandedStage);
@@ -108,6 +114,17 @@ public class Main extends Application {
         } catch (Exception e) {
             System.err.println("Tray install failed: " + e.getMessage());
         }
+
+        // Sudden-drop detection -> user-visible toast (was console-only)
+        viewModel.setSuddenDropListener(msg -> notifier.showWarning("Sudden battery drop", msg));
+
+        // When the main window is hidden, action errors (e.g. Power Saver blocked by
+        // policy) surface as a tray toast; ExpandedView shows the alert when visible.
+        viewModel.actionErrorProperty().addListener((o, old, err) -> {
+            if (err != null && !err.isBlank() && expandedStage != null && !expandedStage.isShowing()) {
+                trayManager.showMessage("WBS action failed", err);
+            }
+        });
 
         // Hotkey
         hotkeyService = new HotkeyService(this::togglePowerSaver);
@@ -133,14 +150,22 @@ public class Main extends Application {
                 if (cfg.chargeLimitEnabled) {
                     chargeReminder.check(pct, isCharging, cfg.chargeLimitPercent, notifier);
                 }
+                checkLowBattery(pct, onAc, cfg);
             } catch (Exception e) {
                 System.err.println("history poll error: " + e.getMessage());
             }
         }, 5, 30, TimeUnit.SECONDS);
-        try {
-            var b = BatteryStatusService.getLastStatus();
-            if (b.getPercent() >= 0) historyService.append(b.getPercent(), b.isOnAC());
-        } catch (Exception ignored) {}
+        // Seed the history on a background thread through the SAME throttle path so
+        // the poller's first tick doesn't append a duplicate sample and no file I/O
+        // happens on the FX thread
+        Thread historySeed = new Thread(() -> {
+            try {
+                var b = BatteryStatusService.getLastStatus();
+                appendHistoryThrottled(b.getPercent(), b.isOnAC());
+            } catch (Exception ignored) {}
+        }, "history-seed");
+        historySeed.setDaemon(true);
+        historySeed.start();
 
         // Focus poll for single instance
         focusPoller = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -186,27 +211,36 @@ public class Main extends Application {
 
         // Update check if enabled
         if (cfg.updateCheckEnabled) {
-            new Thread(() -> {
+            Thread updateThread = new Thread(() -> {
                 try { Thread.sleep(4000); } catch (InterruptedException ignored) {}
                 UpdateCheckService svc = new UpdateCheckService();
                 UpdateCheckService.UpdateInfo info = svc.check(cfg.updateRepoSlug);
                 if (info != null && info.newer()) {
-                    Platform.runLater(() -> trayManager.showMessage("WBS update available", info.latestTag() + " available - click to open releases"));
-                    // Also show alert when expanded is visible
                     Platform.runLater(() -> {
-                        javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.INFORMATION);
-                        a.setTitle("Update available");
-                        a.setHeaderText(AppConstants.APP_FULL_NAME + " " + info.latestTag() + " is available");
-                        a.setContentText("Current: v" + VERSION + "\nLatest: " + info.latestTag() + "\n\nOpen releases page?");
-                        a.getButtonTypes().setAll(javafx.scene.control.ButtonType.YES, javafx.scene.control.ButtonType.NO);
-                        a.showAndWait().ifPresent(bt -> {
-                            if (bt == javafx.scene.control.ButtonType.YES) {
-                                try { java.awt.Desktop.getDesktop().browse(java.net.URI.create(info.htmlUrl())); } catch (Exception ex) {}
-                            }
-                        });
+                        // Tray toast always (silent, non-intrusive)
+                        if (trayManager != null) {
+                            trayManager.showMessage("WBS update available", info.latestTag() + " available - click to open releases");
+                        }
+                        // Modal alert ONLY when the window is visible - a hidden tray
+                        // app must never steal focus with a dialog
+                        if (expandedStage != null && expandedStage.isShowing()) {
+                            javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.INFORMATION);
+                            a.setTitle("Update available");
+                            a.setHeaderText(AppConstants.APP_FULL_NAME + " " + info.latestTag() + " is available");
+                            a.setContentText("Current: v" + VERSION + "\nLatest: " + info.latestTag() + "\n\nOpen releases page?");
+                            a.getButtonTypes().setAll(javafx.scene.control.ButtonType.YES, javafx.scene.control.ButtonType.NO);
+                            a.initOwner(expandedStage);
+                            a.showAndWait().ifPresent(bt -> {
+                                if (bt == javafx.scene.control.ButtonType.YES) {
+                                    try { java.awt.Desktop.getDesktop().browse(java.net.URI.create(info.htmlUrl())); } catch (Exception ex) {}
+                                }
+                            });
+                        }
                     });
                 }
-            }, "update-check").start();
+            }, "update-check");
+            updateThread.setDaemon(true);
+            updateThread.start();
         }
 
         // Coordinator already positions near tray / centered; no extra manual placement needed
@@ -217,43 +251,76 @@ public class Main extends Application {
         Platform.runLater(() -> windowCoordinator.showExpanded());
     }
 
+    /** Applies newly saved settings without a restart: hotkey re-registration
+     *  and idle-dimming enable/disable/threshold updates. */
+    /**
+     * Restart the app with an Administrator token so EcoQoS can also throttle
+     * elevated and background-service processes (Windows blocks OpenProcess on
+     * those for normal-user apps). Frees the single-instance lock for the
+     * elevated copy; if the user declines the UAC prompt, re-acquires it.
+     */
+    private void restartAsAdministrator() {
+        if (ElevationUtil.isRunningElevated()) return; // nothing to do
+        Thread t = new Thread(() -> {
+            SingleInstanceGuard.release(); // let the elevated copy acquire the lock
+            boolean launched;
+            try {
+                launched = ElevationUtil.launchElevated();
+            } catch (Exception e) {
+                launched = false;
+            }
+            if (launched) {
+                System.out.println("Restart as Administrator: elevated instance launched - exiting this one");
+                doExit();
+            } else {
+                // UAC declined or unavailable - keep running as the only instance
+                try { SingleInstanceGuard.acquire(); } catch (Exception ignored) {}
+                Platform.runLater(() -> {
+                    if (trayManager != null) {
+                        trayManager.showMessage(AppConstants.APP_SHORT_NAME,
+                                "Restart as Administrator cancelled or unavailable - continuing as normal user.");
+                    }
+                });
+            }
+        }, "elevate-restart");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void applySettingsLive() {        SettingsService.Config cfg = viewModel != null ? viewModel.getConfig() : null;
+        if (cfg == null) return;
+        // Hotkey: register() un-registers the old one first
+        try {
+            if (hotkeyService != null) hotkeyService.register(cfg.hotkeyModifiers, cfg.hotkeyVk, this::togglePowerSaver);
+        } catch (Exception e) {
+            System.err.println("Hotkey re-register failed: " + e.getMessage());
+        }
+        // Idle dimming: start/stop/update
+        try {
+            if (cfg.idleDimmingEnabled) {
+                if (idleService == null) {
+                    idleService = new IdleDimmingService(new BrightnessService(), cfg.idleMinutes, cfg.dimPercent, 100);
+                    idleService.start();
+                } else {
+                    idleService.updateSettings(cfg.idleMinutes, cfg.dimPercent);
+                }
+            } else if (idleService != null) {
+                idleService.stop();
+                idleService = null;
+            }
+        } catch (Exception e) {
+            System.err.println("Idle settings apply failed: " + e.getMessage());
+        }
+    }
+
     private void showSettingsTab() {
         showExpanded();
-        // TabPane is internal to ExpandedView; we need to select Settings tab.
-        // For simplicity, just show expanded and user clicks Settings. Could add method to ExpandedView to select tab.
-        // We'll add a helper: try to find TabPane via stage scene lookup
-        Platform.runLater(() -> {
-            try {
-                var scene = expandedStage.getScene();
-                var pane = (javafx.scene.control.TabPane) scene.lookup(".wbs-tabs");
-                if (pane != null) {
-                    for (var tab : pane.getTabs()) {
-                        if ("Settings".equals(tab.getText())) {
-                            pane.getSelectionModel().select(tab);
-                            break;
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-        });
+        expandedView.selectTab("Settings");
     }
 
     private void showAboutTab() {
         showExpanded();
-        Platform.runLater(() -> {
-            try {
-                var scene = expandedStage.getScene();
-                var pane = (javafx.scene.control.TabPane) scene.lookup(".wbs-tabs");
-                if (pane != null) {
-                    for (var tab : pane.getTabs()) {
-                        if ("About".equals(tab.getText())) {
-                            pane.getSelectionModel().select(tab);
-                            break;
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-        });
+        expandedView.selectTab("About");
     }
 
     private void hideToTray() {
@@ -276,35 +343,52 @@ public class Main extends Application {
     }
 
     private void togglePowerSaver() {
-        Platform.runLater(() -> {
-            try {
-                viewModel.togglePowerSaver();
-            } catch (SecurityException se) {
-                javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.WARNING, se.getMessage(), javafx.scene.control.ButtonType.OK);
-                a.setHeaderText("Power plan restricted");
-                a.showAndWait();
-            }
-        });
+        // VM runs the heavy work on its own background thread; failures are
+        // surfaced via actionErrorProperty (alert when visible, tray toast when not)
+        if (viewModel != null) viewModel.togglePowerSaver();
     }
 
     private void doExit() {
-        try { if (hotkeyService != null) hotkeyService.unregister(); } catch (Exception ignored) {}
-        try { if (idleService != null) idleService.stop(); } catch (Exception ignored) {}
-        try { if (batteryService != null) batteryService.stop(); } catch (Exception ignored) {}
-        try { ProcessUsageService.stopSampling(); } catch (Exception ignored) {}
-        try { if (ecoService != null) ecoService.shutdown(); } catch (Exception ignored) {}
-        if (historyPoller != null) historyPoller.shutdownNow();
-        if (focusPoller != null) focusPoller.shutdownNow();
-        if (viewModel != null) viewModel.stop();
-        if (trayManager != null) trayManager.remove();
-        notifier.remove();
-        SingleInstanceGuard.release();
+        // Save window position if the window is showing (hideAll persists it)
+        try { if (windowCoordinator != null) windowCoordinator.hideAll(); } catch (Exception ignored) {}
+        shutdownServices();
         Platform.exit();
         System.exit(0);
     }
 
     private long lastHistoryMs = 0;
     private int lastHistoryPct = -999;
+    private boolean lowNotified = false;
+    private boolean criticalNotified = false;
+
+    /** Low/critical battery toasts with separate re-arm flags so a critical alert
+     *  can still fire after the low alert while the battery keeps sinking.
+     *  Each re-arms once the level recovers 5% above its threshold or AC connects. */
+    private void checkLowBattery(int pct, boolean onAc, SettingsService.Config cfg) {
+        if (pct < 0) return;
+        if (onAc) {
+            lowNotified = false;
+            criticalNotified = false;
+            return;
+        }
+        if (pct <= cfg.criticalBatteryThreshold) {
+            if (!criticalNotified) {
+                notifier.showWarning("Battery critical", pct + "% remaining - plug in your charger now.");
+                criticalNotified = true;
+            }
+            lowNotified = true; // low was already implied on the way down
+        } else if (pct <= cfg.lowBatteryThreshold) {
+            if (!lowNotified) {
+                notifier.showInfo("Battery low", pct + "% remaining - consider plugging in.");
+                lowNotified = true;
+            }
+            if (pct > cfg.criticalBatteryThreshold + 5) criticalNotified = false;
+        } else {
+            if (pct > cfg.lowBatteryThreshold + 5) lowNotified = false;
+            if (pct > cfg.criticalBatteryThreshold + 5) criticalNotified = false;
+        }
+    }
+
     private synchronized void appendHistoryThrottled(int pct, boolean onAC) {
         if (pct < 0) return;
         long now = System.currentTimeMillis();
@@ -321,16 +405,25 @@ public class Main extends Application {
 
     @Override
     public void stop() {
+        shutdownServices();
+    }
+
+    /** Single central shutdown path - must un-throttle everything we touched
+     *  (EcoQoS persists after our exit, so stop() is mandatory, not optional). */
+    private void shutdownServices() {
+        try { if (viewModel != null) viewModel.stop(); } catch (Exception ignored) {}
+        try { if (ecoQosThrottleService != null) ecoQosThrottleService.stop(); } catch (Exception ignored) {}
+        try { if (ecoService != null) ecoService.shutdown(); } catch (Exception ignored) {}
         try { if (hotkeyService != null) hotkeyService.unregister(); } catch (Exception ignored) {}
         try { if (idleService != null) idleService.stop(); } catch (Exception ignored) {}
         try { if (batteryService != null) batteryService.stop(); } catch (Exception ignored) {}
         try { ProcessUsageService.stopSampling(); } catch (Exception ignored) {}
-        try { if (ecoService != null) ecoService.shutdown(); } catch (Exception ignored) {}
         if (historyPoller != null) historyPoller.shutdownNow();
         if (focusPoller != null) focusPoller.shutdownNow();
-        if (viewModel != null) viewModel.stop();
-        if (trayManager != null) trayManager.remove();
-        notifier.remove();
+        // Every call guarded: an AWT hiccup here must never skip
+        // SingleInstanceGuard.release() below
+        try { if (trayManager != null) trayManager.remove(); } catch (Exception ignored) {}
+        try { notifier.remove(); } catch (Exception ignored) {}
         SingleInstanceGuard.release();
     }
 

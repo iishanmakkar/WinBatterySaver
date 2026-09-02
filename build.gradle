@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'com.batterysaver'
-version = '1.0.1'
+version = '1.0.2'
 
 java {
     toolchain {
@@ -14,8 +14,8 @@ java {
 }
 
 javafx {
-    version = '17.0.6'
-    modules = [ 'javafx.controls', 'javafx.fxml', 'javafx.graphics' ]
+    version = '21.0.2'
+    modules = [ 'javafx.controls', 'javafx.graphics' ]
 }
 
 tasks.withType(JavaCompile).configureEach {
@@ -79,7 +79,8 @@ task fatJar(type: Jar) {
 // ─── jpackage app-image (no WiX needed) ─────────────────────────────────────
 // Creates a self-contained app directory: WBS\WBS.exe + bundled JRE.
 ext {
-    jpackageBin = 'C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20.8-hotspot\\bin\\jpackage.exe'
+    // Derive jpackage from the running JVM by default; override with -PjpackagePath=...
+    jpackageBin = System.getProperty('java.home') + '\\bin\\jpackage.exe'
     if (project.hasProperty('jpackagePath')) {
         jpackageBin = project.property('jpackagePath')
     }
@@ -105,8 +106,10 @@ task jpackageAppImage(type: Exec) {
         '--vendor',      'WBS Open Source',
         '--description', 'Windows Battery Saver - Cross-OEM battery optimizer',
         '--app-version', version,
-        '--win-console',         // shows no console window (requires --type app-image or later)
-        '--java-options', '--enable-native-access=javafx.graphics'
+        // No --win-console: this is a silent tray app; that flag builds a
+        // console-subsystem launcher that pops a console window on every launch.
+        // (Also no --enable-native-access: the fat jar runs on the classpath, so
+        // that flag only printed "Unknown module: javafx.graphics" on every start.)
     ]
     ignoreExitValue = false
 }
@@ -136,8 +139,7 @@ task jpackageInstaller(type: Exec) {
         '--win-shortcut',
         '--win-menu',
         '--win-menu-group',  'Windows Battery Saver',
-        '--win-upgrade-uuid','a1b2c3d4-e5f6-7890-abcd-ef1234567890',
-        '--java-options',    '--enable-native-access=javafx.graphics'
+        '--win-upgrade-uuid','a1b2c3d4-e5f6-7890-abcd-ef1234567890'
     ]
     ignoreExitValue = true
 

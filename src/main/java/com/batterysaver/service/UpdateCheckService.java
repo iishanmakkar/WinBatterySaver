@@ -1,5 +1,7 @@
 package com.batterysaver.service;
 
+import com.batterysaver.constants.AppConstants;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -14,7 +16,9 @@ import java.util.regex.Pattern;
  * GET https://api.github.com/repos/{slug}/releases/latest, compare tag to local version.
  */
 public class UpdateCheckService {
-    public static final String VERSION = "1.0.0";
+    // Use AppConstants.VERSION (single source of truth) so the packaged version and
+    // the update comparison never disagree.
+    public static final String VERSION = AppConstants.VERSION;
     private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
     public record UpdateInfo(String latestTag, String htmlUrl, boolean newer) {}

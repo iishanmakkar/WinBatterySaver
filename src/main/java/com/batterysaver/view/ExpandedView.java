@@ -2,6 +2,7 @@ package com.batterysaver.view;
 
 import com.batterysaver.constants.AppConstants;
 import com.batterysaver.service.*;
+import com.batterysaver.util.ElevationUtil;
 import com.batterysaver.util.PortableMode;
 import com.batterysaver.view.shell.CustomTitleBar;
 import com.batterysaver.viewmodel.MainViewModel;
@@ -42,21 +43,46 @@ public class ExpandedView {
     private final BatteryHealthService healthService;
     private final Runnable onCloseToTray;
     private final Runnable onRequestCompact;
+    private final Runnable onSettingsSaved;
+    private final Runnable onRestartAsAdmin;
 
     private LineChart<String, Number> chart;
     private ComboBox<String> rangeBox;
     private Label chartInfo;
+    private TabPane tabs;
+    private Timeline drainerTl;
 
     public ExpandedView(MainViewModel vm,
                         BatteryHistoryService historyService,
                         BatteryHealthService healthService,
                         Runnable onCloseToTray,
                         Runnable onRequestCompact) {
+        this(vm, historyService, healthService, onCloseToTray, onRequestCompact, null, null);
+    }
+
+    public ExpandedView(MainViewModel vm,
+                        BatteryHistoryService historyService,
+                        BatteryHealthService healthService,
+                        Runnable onCloseToTray,
+                        Runnable onRequestCompact,
+                        Runnable onSettingsSaved) {
+        this(vm, historyService, healthService, onCloseToTray, onRequestCompact, onSettingsSaved, null);
+    }
+
+    public ExpandedView(MainViewModel vm,
+                        BatteryHistoryService historyService,
+                        BatteryHealthService healthService,
+                        Runnable onCloseToTray,
+                        Runnable onRequestCompact,
+                        Runnable onSettingsSaved,
+                        Runnable onRestartAsAdmin) {
         this.vm = vm;
         this.historyService = historyService;
         this.healthService = healthService;
         this.onCloseToTray = onCloseToTray;
         this.onRequestCompact = onRequestCompact;
+        this.onSettingsSaved = onSettingsSaved;
+        this.onRestartAsAdmin = onRestartAsAdmin;
     }
 
     public Stage createStage() {
@@ -85,6 +111,7 @@ public class ExpandedView {
         tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
         tabs.getStyleClass().add("wbs-tabs");
         tabs.setTabMinWidth(90);
+        this.tabs = tabs;
 
         tabs.getTabs().addAll(
                 createStatusTab(),
@@ -125,7 +152,39 @@ public class ExpandedView {
         } catch (Exception ignored) {}
 
         stage.setScene(scene);
+
+        // Surface VM action errors (e.g. Power Saver toggle blocked by policy) to the user
+        vm.actionErrorProperty().addListener((o, old, err) -> {
+            if (err != null && !err.isBlank() && stage.isShowing()) {
+                Alert a = new Alert(Alert.AlertType.WARNING, err, ButtonType.OK);
+                a.setHeaderText("Action failed");
+                a.initOwner(stage);
+                a.showAndWait();
+            }
+        });
+
+        // Pause the 10s drainer timeline while hidden to avoid wasted work in tray
+        if (drainerTl != null) {
+            if (!stage.isShowing()) drainerTl.pause();
+            stage.showingProperty().addListener((o, was, is) -> {
+                if (Boolean.TRUE.equals(is)) drainerTl.play();
+                else drainerTl.pause();
+            });
+        }
         return stage;
+    }
+
+    /** Select a tab by its text ("Status", "Health", "Processes", "Settings", "About"). */
+    public void selectTab(String name) {
+        Platform.runLater(() -> {
+            if (tabs == null || name == null) return;
+            for (Tab t : tabs.getTabs()) {
+                if (name.equals(t.getText())) {
+                    tabs.getSelectionModel().select(t);
+                    return;
+                }
+            }
+        });
     }
 
     private String res(String path) {
@@ -159,7 +218,6 @@ public class ExpandedView {
         Label batLabel = new Label(); batLabel.getStyleClass().add("card-title");
         Label acLabel = new Label(); acLabel.setStyle("-fx-font-size: 12px;");
         Label drainLabel = new Label(); drainLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: -wbs-text-muted;");
-        Label timeLabel = new Label();
         batLabel.textProperty().bind(Bindings.createStringBinding(() -> {
             int p = vm.batteryPercentProperty().get();
             return "Battery: " + (p < 0 ? "-" : p + "%");
@@ -189,18 +247,9 @@ public class ExpandedView {
         updateSaverBtn.run();
         
         saverBtn.setOnAction(e -> {
-            try {
-                vm.togglePowerSaver();
-            } catch (SecurityException se) {
-                Alert a = new Alert(Alert.AlertType.WARNING, se.getMessage(), ButtonType.OK);
-                a.setHeaderText("Power plan restricted");
-                a.setContentText(se.getMessage());
-                a.showAndWait();
-            } catch (Exception ex) {
-                Alert a = new Alert(Alert.AlertType.ERROR, ex.getMessage(), ButtonType.OK);
-                a.setHeaderText("Power Saver toggle failed");
-                a.showAndWait();
-            }
+            // VM runs the toggle on a background thread; failures surface via
+            // actionErrorProperty (alert attached in createStage)
+            vm.togglePowerSaver();
         });
 
         stats.getChildren().addAll(batLabel, acLabel, drainLabel, saverBtn);
@@ -225,8 +274,10 @@ public class ExpandedView {
         ecoRow.setAlignment(Pos.CENTER_LEFT);
         Button ecoToggle = new Button();
         ecoToggle.getStyleClass().add("primary-btn");
+        // Button shows the ACTUAL engine state (not the intent), so it can never
+        // claim ON while the service is stopped
         Runnable updateEcoBtn = () -> {
-            if (vm.ecoQosEnabledProperty().get()) {
+            if (vm.ecoQosRunningProperty().get()) {
                 ecoToggle.setText("EcoQoS ON");
                 ecoToggle.setStyle("-fx-background-color: -wbs-accent-good; -fx-text-fill: black; -fx-font-weight: bold;");
             } else {
@@ -234,17 +285,31 @@ public class ExpandedView {
                 ecoToggle.setStyle(""); // reset
             }
         };
-        vm.ecoQosEnabledProperty().addListener((o, old, v) -> updateEcoBtn.run());
+        vm.ecoQosRunningProperty().addListener((o, old, v) -> updateEcoBtn.run());
         updateEcoBtn.run();
-        
-        ecoToggle.setOnAction(e -> vm.toggleEcoQos(!vm.ecoQosEnabledProperty().get()));
+
+        // Clicking toggles the RUNNING state: OFF->ON force-starts immediately
+        // (even on AC); ON->OFF stops and disables (no auto-restart)
+        ecoToggle.setOnAction(e -> vm.toggleEcoQos(!vm.ecoQosRunningProperty().get()));
 
         Label ecoCountLabel = new Label();
         ecoCountLabel.setStyle("-fx-font-size: 11px; -fx-font-weight: bold; -fx-text-fill: -wbs-accent-good;");
-        ecoCountLabel.textProperty().bind(Bindings.createStringBinding(
-                () -> vm.ecoQosEnabledProperty().get() ? vm.throttledCountProperty().get() + " background processes throttled in real-time" : "EcoQoS Paused",
-                vm.ecoQosEnabledProperty(), vm.throttledCountProperty()
-        ));
+        ecoCountLabel.setWrapText(true);
+        ecoCountLabel.textProperty().bind(Bindings.createStringBinding(() -> {
+            if (vm.ecoQosRunningProperty().get()) {
+                return vm.throttledCountProperty().get() + " background processes throttled in real-time";
+            }
+            if (vm.ecoQosEnabledProperty().get()) {
+                if (vm.batteryPercentProperty().get() < 0) {
+                    // Desktop / no battery: the battery-based auto-rules never fire
+                    return "No battery detected - toggle ON to throttle background apps anyway";
+                }
+                // Master switch on, engine paused by the auto-rules - say so
+                // instead of showing a bogus "0 throttled"
+                return "Auto-paused (plugged in) - resumes on battery or with Power Saver";
+            }
+            return "EcoQoS off";
+        }, vm.ecoQosRunningProperty(), vm.ecoQosEnabledProperty(), vm.batteryPercentProperty(), vm.throttledCountProperty()));
 
         ecoRow.getChildren().addAll(ecoToggle, ecoCountLabel);
         ecoCard.getChildren().addAll(ecoTitle, ecoDesc, ecoRow);
@@ -258,7 +323,7 @@ public class ExpandedView {
         Label optDesc = new Label("Enable Power Saver, lower brightness to 40%, and clear cached RAM. Frees RAM without closing apps.");
         optDesc.setWrapText(true);
         optDesc.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;");
-        BatteryOptimizerService optimizer = new BatteryOptimizerService();
+        BatteryOptimizerService optimizer = new BatteryOptimizerService(vm.getPowerSaverService());
         Label optResult = new Label("");
         optResult.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-accent-good;");
         optResult.setWrapText(true);
@@ -267,8 +332,8 @@ public class ExpandedView {
         drainerLabel.setStyle("-fx-font-size: 10px;");
         drainerLabel.setWrapText(true);
         drainerLabel.setMaxWidth(Double.MAX_VALUE);
-        // Refresh drainer every 10s
-        Timeline drainerTl = new Timeline(new KeyFrame(Duration.seconds(10), ev -> drainerLabel.setText(optimizer.topDrainerSuggestion())));
+        // Refresh drainer every 10s (paused while window is hidden - see createStage)
+        drainerTl = new Timeline(new KeyFrame(Duration.seconds(10), ev -> drainerLabel.setText(optimizer.topDrainerSuggestion())));
         drainerTl.setCycleCount(Timeline.INDEFINITE);
         drainerTl.play();
         Button optBtn = new Button("Optimize Now - Save Battery");
@@ -285,7 +350,8 @@ public class ExpandedView {
                     optBtn.setDisable(false);
                     optBtn.setText("Optimize Now - Save Battery");
                     optResult.setText(r.summary() + " | " + optimizer.topDrainerSuggestion() + " | Battery drain dropping.");
-                    try { vm.togglePowerSaver(); } catch (Exception ignored) {}
+                    // No toggle here: optimize() already enabled Power Saver; the VM poller
+                    // picks up the real plan state within 5s. Toggling would immediately undo it.
                     refreshChart();
                 });
             }, "optimize-expanded").start();
@@ -366,19 +432,9 @@ public class ExpandedView {
             List<BatteryHistoryService.Entry> entries = vm.getHistoryEntriesForRange(r);
             Platform.runLater(() -> {
                 updateChartInfo(entries, r);
-                BatteryHistoryChart builder = new BatteryHistoryChart();
-                LineChart<String, Number> fresh = builder.build(entries, 60);
-                chart.getData().clear();
-                if (fresh.getData() != null && !fresh.getData().isEmpty()) {
-                    for (var s : fresh.getData()) {
-                        XYChart.Series<String, Number> ns = new XYChart.Series<>();
-                        ns.setName(s.getName());
-                        for (var d : s.getData()) {
-                            ns.getData().add(new XYChart.Data<>(d.getXValue(), d.getYValue()));
-                        }
-                        chart.getData().add(ns);
-                    }
-                }
+                // Build the series directly (no throwaway LineChart)
+                XYChart.Series<String, Number> fresh = new BatteryHistoryChart().buildSeries(entries, 60);
+                chart.getData().setAll(fresh);
                 if (entries.isEmpty()) {
                     chart.setTitle("No history yet - collecting...");
                 } else {
@@ -514,7 +570,7 @@ public class ExpandedView {
 
         TableView<MainViewModel.ProcessRow> table = new TableView<>();
         table.setItems(vm.getProcessRows());
-        table.setPlaceholder(new Label("Collecting CPU data (30s window)..."));
+        table.setPlaceholder(new Label("Collecting CPU data (60s window)..."));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
         table.setPrefHeight(320);
         VBox.setVgrow(table, Priority.ALWAYS);
@@ -546,7 +602,7 @@ public class ExpandedView {
             }
         });
 
-        Label hint = new Label("Top 5 CPU over 30s window, 5s samples. Refresh to re-sort.");
+        Label hint = new Label("Top 5 CPU over 60s window, 15s samples. Refresh to re-sort.");
         hint.setStyle("-fx-font-size: 9px; -fx-text-fill: -wbs-text-muted;");
 
         box.getChildren().addAll(disclaimer, table, hint, refresh);
@@ -594,10 +650,21 @@ public class ExpandedView {
         chargeRow.getChildren().addAll(chargeLbl, chargeSlider, chargeVal);
         CheckBox chargeEnabled = new CheckBox("Notify when battery reaches limit (toast)");
         chargeEnabled.setSelected(cfg.chargeLimitEnabled);
-        chargeSlider.disableProperty().bind(chargeEnabled.selectedProperty());
+        chargeSlider.disableProperty().bind(chargeEnabled.selectedProperty().not());
         Label chargeHint = new Label("Default 80% - helps preserve long-term health. No OEM API, just a reminder.");
         chargeHint.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;"); chargeHint.setWrapText(true);
         chargeCard.getChildren().addAll(chargeTitle, chargeRow, chargeEnabled, chargeHint);
+        // The tray charge-limit menu can change the config while the app runs -
+        // refresh the controls whenever the Settings tab becomes visible
+        tab.selectedProperty().addListener((o, was, is) -> {
+            if (Boolean.TRUE.equals(is)) {
+                SettingsService.Config live = vm.getConfig();
+                if ((int) chargeSlider.getValue() != live.chargeLimitPercent) {
+                    chargeSlider.setValue(live.chargeLimitPercent);
+                }
+                chargeEnabled.setSelected(live.chargeLimitEnabled);
+            }
+        });
         outer.getChildren().add(chargeCard);
 
         // --- Hotkey card ---
@@ -616,7 +683,7 @@ public class ExpandedView {
         Button hkChange = new Button("Change...");
         hkChange.setMinWidth(90);
         hkRow.getChildren().addAll(hkLbl, hkVal, hkChange);
-        Label hkHint = new Label("Default Ctrl+Alt+B. Requires restart to apply after saving.");
+        Label hkHint = new Label("Default Ctrl+Alt+B. Hotkey is re-registered live when you save.");
         hkHint.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;"); hkHint.setWrapText(true);
         final int[] mods = {cfg.hotkeyModifiers}; final int[] vk = {cfg.hotkeyVk};
         hkChange.setOnAction(e-> {
@@ -675,11 +742,38 @@ public class ExpandedView {
         Label idleLbl = new Label("after");
         Spinner<Integer> idleSp = new Spinner<>(1, 30, cfg.idleMinutes);
         idleSp.setPrefWidth(75); idleSp.setEditable(true);
-        idleSp.disableProperty().bind(idleBox.selectedProperty());
+        idleSp.disableProperty().bind(idleBox.selectedProperty().not());
         Label idleMinLbl = new Label("minutes");
         idleRow.getChildren().addAll(idleBox, idleLbl, idleSp, idleMinLbl);
 
-        sysCard.getChildren().addAll(sysTitle, startupRow, idleRow);
+        // --- Elevation (Run as Administrator) row ---
+        // Without elevation Windows denies OpenProcess on elevated/system/service
+        // processes, which is why EcoQoS "doesn't throttle all processes" as normal user.
+        HBox elevRow = new HBox(10);
+        elevRow.setAlignment(Pos.CENTER_LEFT);
+        boolean elevated = ElevationUtil.isRunningElevated();
+        Label elevStatus = new Label(elevated
+                ? "Running elevated (Administrator) - EcoQoS covers elevated and service processes"
+                : "Running as normal user - EcoQoS cannot throttle elevated/system processes");
+        elevStatus.setWrapText(true);
+        elevStatus.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;");
+        HBox.setHgrow(elevStatus, Priority.ALWAYS);
+        Button elevBtn = new Button("Restart as Administrator");
+        elevBtn.getStyleClass().add("secondary-btn");
+        elevBtn.setDisable(elevated || onRestartAsAdmin == null);
+        elevBtn.setOnAction(e -> {
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
+                    "Restart WBS with Administrator rights?\n\nA UAC prompt will appear. The elevated instance can throttle elevated and background-service processes too (full EcoQoS coverage).",
+                    ButtonType.YES, ButtonType.NO);
+            confirm.setHeaderText("Restart as Administrator");
+            confirm.initOwner(stage);
+            confirm.showAndWait().ifPresent(bt -> {
+                if (bt == ButtonType.YES && onRestartAsAdmin != null) onRestartAsAdmin.run();
+            });
+        });
+        elevRow.getChildren().addAll(elevBtn, elevStatus);
+
+        sysCard.getChildren().addAll(sysTitle, startupRow, idleRow, elevRow);
         outer.getChildren().add(sysCard);
 
         // --- EnergyStar EcoQoS Card ---
@@ -700,7 +794,7 @@ public class ExpandedView {
         HBox.setHgrow(ecoWlField, Priority.ALWAYS);
         ecoWlRow.getChildren().addAll(ecoWlLbl, ecoWlField);
 
-        Label ecoStHint = new Label("EnergyStar mechanism: background apps are throttled to low power CPU states. Add mouse/game exes to exclusion list if lag occurs.");
+        Label ecoStHint = new Label("EnergyStar mechanism: background apps are throttled to low power CPU states. Runs automatically on battery / with Power Saver; enabling starts it immediately. Tip: 'Restart as Administrator' (System settings) lets EcoQoS throttle elevated and service processes too. Add mouse/game exes to exclusion list if lag occurs.");
         ecoStHint.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;"); ecoStHint.setWrapText(true);
         ecoSettingsCard.getChildren().addAll(ecoStTitle, ecoStBox, ecoWlRow, ecoStHint);
         outer.getChildren().add(ecoSettingsCard);
@@ -711,16 +805,78 @@ public class ExpandedView {
         updCard.setPadding(new Insets(12));
         Label updTitle = new Label("Updates & Appearance");
         updTitle.getStyleClass().add("card-title");
+
+        Label curVer = new Label("Current version: v" + AppConstants.VERSION);
+        curVer.setStyle("-fx-font-size: 11px; -fx-font-weight: bold;");
+
         HBox updRow = new HBox(10);
         updRow.setAlignment(Pos.CENTER_LEFT);
         CheckBox updBox = new CheckBox("Check for updates on startup");
         updBox.setSelected(cfg.updateCheckEnabled);
         updBox.setMinWidth(210);
-        TextField repoField = new TextField(cfg.updateRepoSlug);
+        TextField repoField = new TextField(cfg.updateRepoSlug != null ? cfg.updateRepoSlug : "");
         repoField.setPromptText("user/repo"); repoField.setPrefWidth(220); HBox.setHgrow(repoField, Priority.ALWAYS);
-        repoField.disableProperty().bind(updBox.selectedProperty());
+        // NOT disabled anymore: the repo slug is also used by "Check now" below,
+        // so it can be configured before enabling the startup check
         updRow.getChildren().addAll(updBox, repoField);
-        Label updHint = new Label("Disabled by default - no outbound request unless enabled (0 cost). Requires repo slug like user/BatterySaver.");
+
+        // Manual check + inline result
+        HBox checkRow = new HBox(10);
+        checkRow.setAlignment(Pos.CENTER_LEFT);
+        Button checkNowBtn = new Button("Check for updates now");
+        checkNowBtn.getStyleClass().add("secondary-btn");
+        Label checkStatus = new Label();
+        checkStatus.setStyle("-fx-font-size: 11px;");
+        checkStatus.setWrapText(true);
+        HBox.setHgrow(checkStatus, Priority.ALWAYS);
+        Hyperlink releasesLink = new Hyperlink("Open releases page");
+        releasesLink.setStyle("-fx-font-size: 11px;");
+        releasesLink.setManaged(false);
+        releasesLink.setVisible(false);
+        releasesLink.setOnAction(e -> {
+            String slug = repoField.getText().trim();
+            if (!slug.isBlank()) {
+                try { Desktop.getDesktop().browse(URI.create("https://github.com/" + slug + "/releases/latest")); } catch (Exception ignored) {}
+            }
+        });
+        checkRow.getChildren().addAll(checkNowBtn, curVer, checkStatus, releasesLink);
+
+        checkNowBtn.setOnAction(e -> {
+            String slug = repoField.getText().trim();
+            if (slug.isBlank() || slug.contains("REPLACE_ME")) {
+                checkStatus.setText("Enter a repo slug (user/repo) first.");
+                releasesLink.setManaged(false);
+                releasesLink.setVisible(false);
+                return;
+            }
+            if (!slug.matches("[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")) {
+                checkStatus.setText("Invalid slug - expected user/repo format.");
+                return;
+            }
+            checkNowBtn.setDisable(true);
+            checkStatus.setText("Checking " + slug + " ...");
+            releasesLink.setManaged(false);
+            releasesLink.setVisible(false);
+            Thread t = new Thread(() -> {
+                UpdateCheckService.UpdateInfo info = new UpdateCheckService().check(slug);
+                Platform.runLater(() -> {
+                    checkNowBtn.setDisable(false);
+                    if (info == null) {
+                        checkStatus.setText("No update info - repo not found, offline, or no releases published.");
+                    } else if (info.newer()) {
+                        checkStatus.setText("Update available: " + info.latestTag() + " (you have v" + AppConstants.VERSION + ")");
+                        releasesLink.setManaged(true);
+                        releasesLink.setVisible(true);
+                    } else {
+                        checkStatus.setText("You are up to date (latest is " + info.latestTag() + ").");
+                    }
+                });
+            }, "update-check-now");
+            t.setDaemon(true);
+            t.start();
+        });
+
+        Label updHint = new Label("Update checks query the GitHub API (api.github.com). No outbound request is made unless you press Check now or enable the startup check.");
         updHint.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;"); updHint.setWrapText(true);
         HBox themeRow = new HBox(10);
         themeRow.setAlignment(Pos.CENTER_LEFT);
@@ -738,7 +894,7 @@ public class ExpandedView {
             if(url!=null) sc.getStylesheets().add(url.toExternalForm());
         });
         themeRow.getChildren().addAll(themeLbl, themeBox);
-        updCard.getChildren().addAll(updTitle, updRow, updHint, themeRow);
+        updCard.getChildren().addAll(updTitle, curVer, updRow, checkRow, updHint, themeRow);
         outer.getChildren().add(updCard);
 
         if(isPortable){
@@ -760,15 +916,19 @@ public class ExpandedView {
         saveRow.getChildren().addAll(save, status);
 
         save.setOnAction(ev->{
-            cfg.chargeLimitPercent=(int)chargeSlider.getValue();
-            cfg.chargeLimitEnabled=chargeEnabled.isSelected();
-            cfg.hotkeyModifiers=mods[0]; cfg.hotkeyVk=vk[0];
-            cfg.idleDimmingEnabled=idleBox.isSelected(); cfg.idleMinutes=idleSp.getValue();
-            cfg.updateCheckEnabled=updBox.isSelected(); cfg.updateRepoSlug=repoField.getText().trim();
-            cfg.theme = themeBox.getValue();
-            cfg.ecoQosEnabled = ecoStBox.isSelected();
-            cfg.ecoQosWhitelistStr = ecoWlField.getText().trim();
-            vm.toggleEcoQos(cfg.ecoQosEnabled);
+            // Edit a COPY, then swap it in atomically - the live config must never
+            // be mutated in place (background pollers read it)
+            SettingsService.Config saved = vm.getConfig().copy();
+            saved.chargeLimitPercent=(int)chargeSlider.getValue();
+            saved.chargeLimitEnabled=chargeEnabled.isSelected();
+            saved.hotkeyModifiers=mods[0]; saved.hotkeyVk=vk[0];
+            saved.idleDimmingEnabled=idleBox.isSelected(); saved.idleMinutes=idleSp.getValue();
+            saved.updateCheckEnabled=updBox.isSelected(); saved.updateRepoSlug=repoField.getText().trim();
+            saved.theme = themeBox.getValue();
+            saved.ecoQosEnabled = ecoStBox.isSelected();
+            saved.ecoQosWhitelistStr = ecoWlField.getText().trim();
+            vm.updateEcoQosWhitelist(saved.ecoQosWhitelistStr);
+            vm.toggleEcoQos(saved.ecoQosEnabled);
             if(!isPortable){
                 try{
                     if(startupBox.isSelected()){
@@ -777,10 +937,13 @@ public class ExpandedView {
                     } else ss.disable();
                 }catch(Exception ex){ new Alert(Alert.AlertType.WARNING, ex.getMessage()).showAndWait(); }
             }
-            cfg.autoStart=startupBox.isSelected();
-            SettingsService.save(cfg);
-            vm.updateConfig(cfg);
-            status.setText("Saved to "+PortableMode.getConfigPath()+" - restart to apply hotkey");
+            saved.autoStart=startupBox.isSelected();
+            SettingsService.save(saved);
+            vm.updateConfig(saved);
+            if (onSettingsSaved != null) {
+                try { onSettingsSaved.run(); } catch (Exception ex) { System.err.println("Live apply failed: " + ex.getMessage()); }
+            }
+            status.setText("Saved to "+PortableMode.getConfigPath()+" (applied live; hotkey re-registered)");
         });
 
         outer.getChildren().add(saveRow);
@@ -817,26 +980,31 @@ public class ExpandedView {
         });
         if(AppConstants.GITHUB_REPO.contains("REPLACE_ME")) gh.setText("GitHub: (configure repo slug in Settings)");
 
-        Label lic = new Label("License: MIT - Free for personal and corporate use (0 cost).\nCredits: Built with JDK 25 + JavaFX 25 + JNA 5.14");
+        // Developer profile + issue tracker links
+        Hyperlink dev = new Hyperlink("Developed by @" + AppConstants.GITHUB_PROFILE);
+        dev.setStyle("-fx-font-size: 12px;");
+        dev.setOnAction(e->{
+            try{ Desktop.getDesktop().browse(URI.create("https://github.com/"+AppConstants.GITHUB_PROFILE)); }catch(Exception ex){}
+        });
+        Hyperlink issues = new Hyperlink("Report an issue / feature request");
+        issues.setStyle("-fx-font-size: 11px;");
+        issues.setOnAction(e->{
+            try{ Desktop.getDesktop().browse(URI.create("https://github.com/"+AppConstants.GITHUB_REPO+"/issues")); }catch(Exception ex){}
+        });
+        HBox linkRow = new HBox(14, gh, dev);
+        linkRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label lic = new Label("License: MIT - Free for personal and corporate use (0 cost).\nCredits: Built with JDK 17+ & JavaFX 21 & JNA 5.14");
         lic.setWrapText(true);
         lic.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;");
 
         Button closeBtn = new Button("Close to tray");
         closeBtn.setOnAction(e-> { if(onCloseToTray!=null) onCloseToTray.run(); });
 
-        box.getChildren().addAll(title, ver, new Separator(), desc, gh, lic, closeBtn);
+        box.getChildren().addAll(title, ver, new Separator(), desc, linkRow, issues, lic, closeBtn);
         tab.setContent(new ScrollPane(box));
         return tab;
     }
 
-    public void show() {
-        if (stage == null) createStage();
-        stage.show();
-        stage.toFront();
-        stage.requestFocus();
-    }
-
-    public void hide() { if (stage!=null) stage.hide(); }
-    public boolean isShowing() { return stage!=null && stage.isShowing(); }
     public Stage getStage() { return stage; }
 }

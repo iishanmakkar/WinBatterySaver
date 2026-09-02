@@ -31,9 +31,13 @@ public class BatteryStatusService {
                     int pctRaw = Byte.toUnsignedInt(status.BatteryLifePercent);
                     b.setPercent(pctRaw == 255 ? -1 : pctRaw);
 
-                    // ACLineStatus: 0=offline, 1=online, 255=unknown
+                    // ACLineStatus: 0=offline, 1=online, 255=unknown.
+                    // Treat 255 as "no change" (keep last known) so a glitch doesn't
+                    // spuriously fire the unplug auto-saver.
                     int acRaw = Byte.toUnsignedInt(status.ACLineStatus);
-                    b.setOnAC(acRaw == 1);
+                    if (acRaw == 1) b.setOnAC(true);
+                    else if (acRaw == 0) b.setOnAC(false);
+                    else b.setOnAC(lastBattery != null && lastBattery.isOnAC());
 
                     if (status.BatteryLifeTime >= 0) {
                         b.setRemainingSeconds(status.BatteryLifeTime);
@@ -50,7 +54,7 @@ public class BatteryStatusService {
                     lastBattery = b;
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                System.err.println("BatteryStatus poll error: " + e.getMessage());
             }
         }, 0, POLL_INTERVAL_SECONDS, TimeUnit.SECONDS);
     }

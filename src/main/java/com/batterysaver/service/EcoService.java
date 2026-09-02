@@ -1,18 +1,18 @@
 package com.batterysaver.service;
 
-import com.batterysaver.constants.AppConstants;
+import com.batterysaver.interop.User32Ext;
+import com.batterysaver.util.PortableMode;
 import com.sun.jna.Memory;
 import com.sun.jna.NativeLibrary;
 import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.*;
-import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinNT.HANDLE;
-import com.sun.jna.platform.win32.WinUser.WinEventProc;
 import com.sun.jna.ptr.IntByReference;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -43,24 +43,36 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
         return t;
     });
 
-    // Foreground hook disabled in Phase 13 - using EcoQoS exclusively for background throttling
-    // Foreground process tracking removed; EcoQoS handles throttling based on AC/power-saver state
-    
-    private Object hook;
-    private ThrottleStatus status = ThrottleStatus.STOPPED;
-    private long pendingPid = -1;
-    private String pendingName = "";
+    // Written under lock in updateThrottleStatus, read from housekeeper thread -> volatile
+    private volatile ThrottleStatus status = ThrottleStatus.STOPPED;
+
+    // Pids where we lowered the priority class (fallback path only), so we only
+    // restore NORMAL on processes we actually changed (don't clobber user priorities).
+    private final Set<Long> priorityLoweredPids = ConcurrentHashMap.newKeySet();
+    // Pids we applied EcoQoS to. Unthrottling is scoped to this set so we never
+    // clear an Efficiency Mode the user set manually via Task Manager.
+    private final Set<Long> ecoThrottledPids = ConcurrentHashMap.newKeySet();
 
     private volatile boolean pauseThrottling = false;
     private volatile boolean throttleWhenPluggedIn = false;
 
-    // Whitelist/blacklist - volatile for thread safety
-    private volatile Set<String> whitelist = new HashSet<>(Arrays.asList(
+    // Whitelist/blacklist - volatile for thread safety.
+    // Defaults = shell/system processes + the EcoQoS engine's known-conflict list
+    // (discord/steam/obs/mouse software) so the two engines never disagree about
+    // what is safe to throttle.
+    private static final Set<String> DEFAULT_ECO_WHITELIST = Set.of(
             "wbs.exe", "wbs", "batterysaver", "msedge.exe", "firefox.exe", "taskmgr.exe",
             "dwm.exe", "explorer.exe", "sihost.exe", "searchhost.exe", "startmenuexperiencehost.exe",
             "shellexperiencehost.exe", "applicationframehost.exe", "textinputhost.exe", "ctfmon.exe",
-            "csrss.exe", "winlogon.exe", "services.exe", "svchost.exe", "lsass.exe"
-    ));
+            "csrss.exe", "winlogon.exe", "services.exe", "svchost.exe", "lsass.exe",
+            "logioptionsplus.exe", "logioptionsplus_agent.exe", "steam.exe", "steamwebhelper.exe",
+            "discord.exe", "startallback.exe", "explorerpatcher.exe", "obs64.exe", "obs32.exe",
+            // Console infrastructure - throttling the console host stalls pipe I/O
+            "conhost.exe", "openconsole.exe", "windowsterminal.exe",
+            // Java launchers - protects dev/fat-jar runs (app must not throttle itself)
+            "java.exe", "javaw.exe", "windowsbatterysaver.exe"
+    );
+    private volatile Set<String> whitelist = new HashSet<>(DEFAULT_ECO_WHITELIST);
     private volatile Set<String> blacklist = new HashSet<>();
     private volatile Set<String> wildcardWhitelist = new HashSet<>();
     private volatile Set<String> wildcardBlacklist = new HashSet<>();
@@ -73,24 +85,24 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
 
     private final Pointer pThrottleOn;
     private final Pointer pThrottleOff;
-    private final int controlBlockSize = 8; // PROCESS_POWER_THROTTLING_STATE: Version(4)+ControlMask(4)+StateMask(4) aligned to 8? Use 12 for safety
+    // PROCESS_POWER_THROTTLING_STATE = Version(4) + ControlMask(4) + StateMask(4) = 12 bytes
+    private static final int CONTROL_BLOCK_SIZE = 12;
 
     public EcoService() {
-        // Detect Windows build for EcoQoS support
+        // Detect Windows build for EcoQoS support.
+        // GetVersionEx lies (returns 6.2.9200) without a compat manifest, so read the
+        // build number from the registry instead.
         try {
-            String ver = System.getProperty("os.version");
-            // Win11 is 10.0 build >=22000
-            if (ver != null) {
-                // Use JNA to get real build if possible
-                try {
-                    WinNT.OSVERSIONINFOEX info = new WinNT.OSVERSIONINFOEX();
-                    if (Kernel32.INSTANCE.GetVersionEx(info)) {
-                        int build = info.dwBuildNumber.intValue();
-                        ecoSupported = build >= 22000;
-                    }
-                } catch (Exception ignored) {}
+            String build = Advapi32Util.registryGetStringValue(
+                    WinReg.HKEY_LOCAL_MACHINE,
+                    "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                    "CurrentBuildNumber");
+            if (build != null) {
+                ecoSupported = Integer.parseInt(build.trim()) >= 22000;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+            // Keep default (true); SetProcessInformation failure falls back to priority anyway
+        }
 
         // Pre-allocate control blocks for SetProcessInformation
         // PROCESS_POWER_THROTTLING_STATE {Version=1, ControlMask=1, StateMask=0/1}
@@ -127,21 +139,15 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
     public void initialize() {
         lock.lock();
         try {
-            // Hook foreground changes - using Object type to avoid WinEventProc compile issues pre-Phase13
-            // hook = User32.INSTANCE.SetWinEventHook(...); // disabled for Phase 13 build
-            System.out.println("EcoService: foreground hook skipped (Phase 13 EcoQoS active)");
-
             // Housekeeping every 5 minutes (like EnergyStarX)
             housekeeper.scheduleWithFixedDelay(() -> {
                 try {
-                    System.out.println("EcoService: housekeeping throttle");
                     throttleUserBackgroundProcesses();
                 } catch (Exception e) {
                     System.err.println("Eco housekeeping error: " + e.getMessage());
                 }
             }, 5, 5, TimeUnit.MINUTES);
 
-            // Initial throttle based on current power source (assume battery check will call update)
             System.out.println("EcoService initialized, ecoSupported=" + ecoSupported + " session=" + currentSessionId);
         } finally {
             lock.unlock();
@@ -151,9 +157,6 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
     public void shutdown() {
         lock.lock();
         try {
-            // hook not used in Phase 13 (EcoQoS active)
-            // if (hook != null) { try { User32.INSTANCE.UnhookWinEvent(hook); } catch (Exception ignored) {} }
-            hook = null;
             housekeeper.shutdownNow();
             // Unthrottle all on exit
             setPauseThrottling(true);
@@ -232,25 +235,45 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
     }
 
     private void unthrottleAll() {
-        for (ProcessHandle ph : ProcessHandle.allProcesses().toList()) {
+        // Only iterate processes we actually touched - no full system scan, and we
+        // never reset state on processes the user configured themselves.
+        Set<Long> ours = new HashSet<>(ecoThrottledPids);
+        ours.addAll(priorityLoweredPids);
+        for (Long pid : ours) {
+            if (pid.intValue() == ProcessHandle.current().pid()) continue;
             try {
-                if (ph.pid() == ProcessHandle.current().pid()) continue;
-                int pid = (int) ph.pid();
-                IntByReference sess = new IntByReference();
-                try {
-                    if (Kernel32.INSTANCE.ProcessIdToSessionId(pid, sess) && sess.getValue() != currentSessionId) continue;
-                } catch (Exception ignored) {}
-                toggleEfficiencyMode(pid, ph.info().command().orElse(""), false);
+                toggleEfficiencyMode(pid.intValue(), "", false);
             } catch (Exception ignored) {}
         }
     }
 
     public void throttleUserBackgroundProcesses() {
+        // Prune dead PIDs first (PID reuse would make stale entries unthrottle an
+        // unrelated process later)
+        ecoThrottledPids.removeIf(pid -> !ProcessHandle.of(pid).isPresent());
+        priorityLoweredPids.removeIf(pid -> !ProcessHandle.of(pid).isPresent());
+
+        // NEVER throttle the app the user is actively using (same rule as the
+        // EcoQoS engine): skip the foreground process, its exe-name siblings,
+        // its process tree (focused terminal's child shells), and ANY process
+        // that owns a visible non-minimized window (Notepad, Settings, ...)
+        long foregroundPid = getForegroundPid();
+        String foregroundExe = "";
+        if (foregroundPid > 0) {
+            foregroundExe = ProcessHandle.of(foregroundPid)
+                    .flatMap(ph -> ph.info().command())
+                    .map(EcoService::extractExeName)
+                    .orElse("");
+        }
+        Set<Long> visiblePids = com.batterysaver.util.VisibleWindows.visibleWindowPids();
+
         int throttled = 0;
         for (ProcessHandle ph : ProcessHandle.allProcesses().toList()) {
             try {
                 long pidL = ph.pid();
                 if (pidL == ProcessHandle.current().pid()) continue;
+                if (pidL == foregroundPid) continue;
+                if (visiblePids.contains(pidL)) continue;
                 int pid = (int) pidL;
                 // Session isolation
                 try {
@@ -259,8 +282,16 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
                 } catch (Exception ignored) {}
 
                 String cmd = ph.info().command().orElse("");
-                String name = cmd.contains("\\") ? cmd.substring(cmd.lastIndexOf('\\')+1) : cmd;
-                if (name.isEmpty()) name = ph.info().commandLine().orElse("pid:" + pid);
+                String name = extractExeName(cmd);
+                if (name.isEmpty()) {
+                    // commandLine() includes arguments - strip them so "chrome.exe --type=renderer"
+                    // still matches the "chrome.exe" whitelist entry
+                    name = extractExeName(ph.info().commandLine().orElse("pid:" + pid));
+                }
+                boolean foregroundTree = (!foregroundExe.isEmpty() && name.equals(foregroundExe))
+                        || com.batterysaver.util.ProcessTree.isInTree(pidL, foregroundPid);
+                if (foregroundTree) continue;
+
                 // Whitelist check
                 boolean inWhitelist = isInList(name, whitelist, wildcardWhitelist);
                 boolean inBlacklist = isInList(name, blacklist, wildcardBlacklist);
@@ -284,6 +315,50 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
         System.out.println("EcoService: throttled " + throttled + " processes for status " + status);
     }
 
+    private long getForegroundPid() {
+        try {
+            com.sun.jna.platform.win32.WinDef.HWND fg = User32Ext.INSTANCE.GetForegroundWindow();
+            if (fg == null) return -1;
+            IntByReference pidRef = new IntByReference();
+            int threadId = User32Ext.INSTANCE.GetWindowThreadProcessId(fg, pidRef);
+            return threadId > 0 ? pidRef.getValue() : -1;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** Extracts the bare exe name from a command line / path, lowercased, arguments stripped.
+     *  Handles quoted paths and paths containing spaces ("C:\Program Files\...\app.exe" --arg).
+     *  Package-private for testing. */
+    static String extractExeName(String cmd) {
+        if (cmd == null || cmd.isEmpty()) return "";
+        String s = cmd.trim();
+        if (s.startsWith("\"")) {
+            // Quoted executable: take everything inside the first pair of quotes
+            int end = s.indexOf('"', 1);
+            s = end > 0 ? s.substring(1, end) : s.substring(1);
+        } else {
+            // Unquoted: the exe ends at ".exe" followed by whitespace/quote/end.
+            // (A naive first-space split turns "C:\Program Files\..." into "program".)
+            String lower = s.toLowerCase();
+            int dot = lower.indexOf(".exe");
+            while (dot >= 0) {
+                int after = dot + 4;
+                if (after >= s.length() || s.charAt(after) == ' ' || s.charAt(after) == '"') break;
+                dot = lower.indexOf(".exe", dot + 1);
+            }
+            if (dot >= 0) {
+                s = s.substring(0, dot + 4);
+            } else {
+                int sp = s.indexOf(' ');
+                if (sp > 0) s = s.substring(0, sp);
+            }
+        }
+        int slash = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
+        String name = slash >= 0 ? s.substring(slash + 1) : s;
+        return name.toLowerCase();
+    }
+
     private boolean isInList(String name, Set<String> exact, Set<String> wildcards) {
         if (exact.contains(name)) return true;
         String lower = name.toLowerCase();
@@ -304,28 +379,50 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
             h = Kernel32.INSTANCE.OpenProcess(access, false, pid);
             if (h == null || h.equals(WinBase.INVALID_HANDLE_VALUE)) return;
 
-            boolean ecoOk = false;
-            if (ecoSupported && setProcessInformationFn != null) {
-                try {
-                    Pointer block = enable ? pThrottleOn : pThrottleOff;
-                    int res = setProcessInformationFn.invokeInt(new Object[]{h, PROCESS_POWER_THROTTLING, block, controlBlockSize});
-                    ecoOk = res != 0;
-                } catch (Exception e) {
-                    ecoOk = false;
+            if (enable) {
+                boolean ecoOk = false;
+                if (ecoSupported && setProcessInformationFn != null) {
+                    try {
+                        int res = setProcessInformationFn.invokeInt(new Object[]{h, PROCESS_POWER_THROTTLING, pThrottleOn, CONTROL_BLOCK_SIZE});
+                        ecoOk = res != 0;
+                    } catch (Exception e) {
+                        ecoOk = false;
+                    }
                 }
-            }
-            // Always set priority class as fallback for any laptop (Win10 too)
-            try {
-                int pri = enable ? IDLE_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS;
-                if (setPriorityClassFn != null) {
-                    setPriorityClassFn.invokeInt(new Object[]{h, pri});
+                if (ecoOk) {
+                    ecoThrottledPids.add((long) pid);
                 } else {
-                    Kernel32.INSTANCE.SetPriorityClass(h, new WinDef.DWORD(pri));
+                    // Only degrade priority when EcoQoS is unavailable (Win10 fallback).
+                    // Applying IDLE unconditionally would be far more aggressive than EcoQoS.
+                    try {
+                        if (setPriorityClassFn != null) {
+                            setPriorityClassFn.invokeInt(new Object[]{h, IDLE_PRIORITY_CLASS});
+                        } else {
+                            Kernel32.INSTANCE.SetPriorityClass(h, new WinDef.DWORD(IDLE_PRIORITY_CLASS));
+                        }
+                        priorityLoweredPids.add((long) pid);
+                    } catch (Exception ignored) {}
                 }
-            } catch (Exception ignored) {}
-            // Log only for throttling, not for unthrottling to reduce spam
-            if (enable && ecoOk) {
-                // System.out.println("Eco throttled: " + name + " pid " + pid);
+            } else {
+                // Unthrottle ONLY processes we throttled ourselves
+                if (!ecoThrottledPids.remove((long) pid) && !priorityLoweredPids.contains((long) pid)) {
+                    return;
+                }
+                if (ecoSupported && setProcessInformationFn != null) {
+                    try {
+                        setProcessInformationFn.invokeInt(new Object[]{h, PROCESS_POWER_THROTTLING, pThrottleOff, CONTROL_BLOCK_SIZE});
+                    } catch (Exception ignored) {}
+                }
+                // Restore priority ONLY on processes we lowered ourselves
+                if (priorityLoweredPids.remove((long) pid)) {
+                    try {
+                        if (setPriorityClassFn != null) {
+                            setPriorityClassFn.invokeInt(new Object[]{h, NORMAL_PRIORITY_CLASS});
+                        } else {
+                            Kernel32.INSTANCE.SetPriorityClass(h, new WinDef.DWORD(NORMAL_PRIORITY_CLASS));
+                        }
+                    } catch (Exception ignored) {}
+                }
             }
         } catch (Exception e) {
             // Ignore access denied for protected processes
@@ -334,11 +431,9 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
         }
     }
 
-    // Persistence for lists
+    // Persistence for lists - colocate with the app config dir (portable-aware)
     private Path getEcoDir() {
-        String appData = System.getenv("APPDATA");
-        if (appData == null) appData = System.getProperty("java.io.tmpdir");
-        return Path.of(appData, "BatterySaver");
+        return PortableMode.getConfigPath().getParent();
     }
 
     private void loadListsFromDisk() {
@@ -348,7 +443,9 @@ private static final int EVENT_SYSTEM_FOREGROUND = 3;
             Path bFile = dir.resolve("eco_blacklist.txt");
             if (Files.exists(wFile)) {
                 List<String> lines = Files.readAllLines(wFile);
-                Set<String> exact = new HashSet<>();
+                // Merge with defaults so a file saved by an older version doesn't
+                // drop the shell/known-conflict entries
+                Set<String> exact = new HashSet<>(DEFAULT_ECO_WHITELIST);
                 Set<String> wild = new HashSet<>();
                 for (String l : lines) {
                     String s = l.trim();

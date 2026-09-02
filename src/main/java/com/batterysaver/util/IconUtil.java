@@ -46,11 +46,18 @@ public class IconUtil {
             g.setColor(fill);
             g.fillRoundRect(x + 2, y + 2, Math.max(1, fillW), h - 3, size / 8, size / 8);
 
-            // Charging bolt
+            // Charging bolt - drawn as a polygon (the "⚡" text glyph renders as a
+            // tofu box on many JDK/font configurations at 16-32px)
             if (charging && pct < 98) {
                 g.setColor(Color.WHITE);
-                g.setFont(new Font("SansSerif", Font.BOLD, Math.max(8, size / 2)));
-                g.drawString("⚡", x + w / 4, y + h - 1);
+                int cx = x + w / 2;
+                int cy = y + h / 2;
+                int s = Math.max(3, size / 5);
+                int[] bx = {cx + s * 15 / 100, cx - s * 35 / 100, cx - s * 5 / 100,
+                            cx - s * 15 / 100, cx + s * 35 / 100, cx + s * 5 / 100};
+                int[] by = {cy - s, cy + s / 10, cy + s / 10,
+                            cy + s, cy - s / 10, cy - s / 10};
+                g.fillPolygon(bx, by, bx.length);
             }
         } else {
             g.setColor(new Color(0xa1, 0xa1, 0xaa));

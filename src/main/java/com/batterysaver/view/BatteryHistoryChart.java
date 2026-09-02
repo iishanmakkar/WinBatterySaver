@@ -64,21 +64,28 @@ public class BatteryHistoryChart {
         chart.setMinHeight(180);
         chart.setPrefHeight(200);
         chart.getStyleClass().add("history-chart");
-        // Reduce clutter: only show every Nth label if many points
-        List<BatteryHistoryService.Entry> sampled = downsample(sorted, maxPoints);
+        chart.getData().add(buildSeries(sorted, maxPoints));
+        return chart;
+    }
+
+    /**
+     * Builds the data series with unique category labels. Categories on a
+     * CategoryAxis MUST be unique: duplicate values (e.g. blank labels or the
+     * same HH:mm stamp) collapse into one x-position and mangle the line, so
+     * collisions are disambiguated with trailing spaces (invisible when rendered).
+     */
+    public XYChart.Series<String, Number> buildSeries(List<BatteryHistoryService.Entry> entries, int maxPoints) {
+        List<BatteryHistoryService.Entry> sampled = downsample(entries, maxPoints);
         boolean withDate = sampled.size() > 24 || isMultiDay(sampled);
         XYChart.Series<String, Number> series = new XYChart.Series<>();
         series.setName("Battery");
-        for (int i = 0; i < sampled.size(); i++) {
-            BatteryHistoryService.Entry e = sampled.get(i);
+        java.util.HashSet<String> used = new java.util.HashSet<>();
+        for (BatteryHistoryService.Entry e : sampled) {
             String label = formatLabel(e.timestamp(), withDate);
-            // Thin labels: only show label for every 3rd point if many points to avoid crowding
-            if (sampled.size() > 30 && i % 3 != 0) label = "";
+            while (!used.add(label)) label = label + " ";
             series.getData().add(new XYChart.Data<>(label, e.percent()));
         }
-        chart.getData().add(series);
-        // Tooltip on hover is handled by chart, not needed
-        return chart;
+        return series;
     }
 
     private boolean isMultiDay(List<BatteryHistoryService.Entry> entries) {
@@ -90,9 +97,10 @@ public class BatteryHistoryChart {
 
     public static List<BatteryHistoryService.Entry> downsample(List<BatteryHistoryService.Entry> entries, int maxPoints) {
         if (entries.size() <= maxPoints) return entries;
-        // Simple uniform downsample
-        double step = (double) entries.size() / maxPoints;
-        java.util.ArrayList<BatteryHistoryService.Entry> out = new java.util.ArrayList<>();
+        // Uniform downsample that always includes BOTH endpoints - the most recent
+        // sample matters most on a live battery chart
+        double step = (double) (entries.size() - 1) / (maxPoints - 1);
+        java.util.ArrayList<BatteryHistoryService.Entry> out = new java.util.ArrayList<>(maxPoints);
         for (int i = 0; i < maxPoints; i++) {
             int idx = (int) Math.round(i * step);
             if (idx >= entries.size()) idx = entries.size() - 1;
@@ -106,13 +114,8 @@ public class BatteryHistoryChart {
     }
 
     public ObservableList<XYChart.Series<String, Number>> toSeries(List<BatteryHistoryService.Entry> entries, int maxPoints) {
-        List<BatteryHistoryService.Entry> sampled = downsample(entries, maxPoints);
         ObservableList<XYChart.Series<String, Number>> list = FXCollections.observableArrayList();
-        XYChart.Series<String, Number> s = new XYChart.Series<>();
-        for (BatteryHistoryService.Entry e : sampled) {
-            s.getData().add(new XYChart.Data<>(formatLabel(e.timestamp(), sampled.size() > 24), e.percent()));
-        }
-        list.add(s);
+        list.add(buildSeries(entries, maxPoints));
         return list;
     }
 }

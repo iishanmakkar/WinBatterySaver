@@ -31,8 +31,23 @@ public class BatteryOptimizerService {
         }
     }
 
-    private final PowerSaverModeService saver = new PowerSaverModeService();
+    private final PowerSaverModeService saver;
     private final BrightnessService brightness = new BrightnessService();
+
+    /**
+     * Shares the app-wide PowerSaverModeService so enable/disable state
+     * (previous plan GUID, previous brightness) stays consistent with the
+     * tray/hotkey toggle. A private instance would record its own restore
+     * state and leave the user stuck on Power Saver when disabled elsewhere.
+     */
+    public BatteryOptimizerService(PowerSaverModeService saver) {
+        this.saver = saver;
+    }
+
+    /** Standalone constructor (tests / one-off use). */
+    public BatteryOptimizerService() {
+        this(new PowerSaverModeService());
+    }
 
     /**
      * Optimize for battery: enable saver, dim, and empty working sets.
@@ -160,22 +175,5 @@ public class BatteryOptimizerService {
         } catch (Exception ex) {
             return "Unable to determine top drainer: " + ex.getMessage();
         }
-    }
-
-    public boolean killByName(String name) {
-        try {
-            for (ProcessHandle ph : ProcessHandle.allProcesses().toList()) {
-                String cmd = ph.info().command().orElse("");
-                String shortName = cmd.contains("\\") ? cmd.substring(cmd.lastIndexOf('\\')+1) : cmd;
-                if (shortName.equalsIgnoreCase(name) || cmd.equalsIgnoreCase(name)) {
-                    boolean destroyed = ph.destroy();
-                    if (!destroyed) destroyed = ph.destroyForcibly();
-                    return destroyed;
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("kill failed: " + e.getMessage());
-        }
-        return false;
     }
 }

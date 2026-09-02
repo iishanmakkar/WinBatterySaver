@@ -6,8 +6,8 @@ import java.util.concurrent.*;
 
 /**
  * Process usage estimated via ProcessHandle CPU duration deltas.
- * Single-sample CPU% is noisy - we sample every 5s, keep 6-sample ring (30s window), average.
- * Calls via ProcessCpuSampler; static facade for UI.
+ * Single-sample CPU% is noisy - we sample every 15s, keep a 4-sample ring
+ * (60s window), average. Calls via ProcessCpuSampler; static facade for UI.
  */
 public class ProcessUsageService {
     private static final ProcessCpuSampler sampler = new ProcessCpuSampler();
@@ -56,8 +56,10 @@ public class ProcessUsageService {
             try {
                 int cpus = Runtime.getRuntime().availableProcessors();
                 long intervalMs = INTERVAL_SECONDS * 1000L;
+                Set<Long> alive = ConcurrentHashMap.newKeySet();
                 for (ProcessHandle ph : ProcessHandle.allProcesses().toList()) {
                     long pid = ph.pid();
+                    alive.add(pid);
                     Optional<Duration> cpuOpt = ph.info().totalCpuDuration();
                     if (cpuOpt.isEmpty()) continue;
                     Duration cur = cpuOpt.get();
@@ -71,8 +73,8 @@ public class ProcessUsageService {
                     long deltaMs = cur.toMillis() - prev.toMillis();
                     if (deltaMs < 0) deltaMs = 0;
                     double pct = (deltaMs * 100.0) / intervalMs / cpus;
-                    // Clamp absurd spikes
-                    if (pct > 100.0 * cpus) pct = 100.0;
+                    // After normalization pct cannot legitimately exceed 100
+                    if (pct > 100.0) pct = 100.0;
                     if (pct < 0) pct = 0;
                     // Only keep if meaningful
                     Deque<Double> dq = ring.computeIfAbsent(pid, k -> new ArrayDeque<>(WINDOW));
@@ -81,8 +83,10 @@ public class ProcessUsageService {
                         while (dq.size() > WINDOW) dq.removeFirst();
                     }
                 }
-                // Cleanup dead pids: remove entries not seen in prevCpu recently
-                // Simple: if pid not in current allProcesses, evict after a while. For now keep all.
+                // Evict dead pids - maps used to grow unbounded over long tray sessions
+                ring.keySet().retainAll(alive);
+                prevCpu.keySet().retainAll(alive);
+                names.keySet().retainAll(alive);
             } catch (Exception e) {
                 System.err.println("ProcessCpuSampler snapshot failed: " + e.getMessage());
             }
