@@ -1,122 +1,127 @@
 <div align="center">
-  <img src="docs/hero.jpg" alt="WBS Hero Banner" width="100%">
-  
-  # WBS - Windows Battery Saver 🔋
-  
-  **Cross-OEM, Lightweight & Intelligent Laptop Battery Saver for Windows 11 & 10**
 
-  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-  [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue.svg)](https://microsoft.com/windows)
-  [![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://openjdk.java.net/)
-  [![Build](https://img.shields.io/badge/Build-Gradle-02303A.svg)](https://gradle.org)
+<img src="docs/hero.jpg" alt="WBS — Windows Battery Saver" width="100%">
 
-</div>
+# ⚡ Windows Battery Saver (WBS)
 
-WBS (Windows Battery Saver) is an open-source, production-ready utility designed to maximize laptop battery life across all major brands (**Dell, HP, Lenovo, Asus, Acer, Surface, MSI, Razer, Samsung**). It requires no proprietary vendor drivers, running natively via standard Windows APIs (`Kernel32`, `User32`, `powercfg`, and `WMI`).
+**Real battery saving for Windows 10/11 — no OEM drivers, no bloat, no telemetry.**
 
----
+EcoQoS Efficiency Mode throttling • Auto Power Saver • Battery health tracking • One-click optimizer
 
-## 💻 Application Preview
+[![Release](https://img.shields.io/github/v/release/iishanmakkar/WinBatterySaver?color=green&label=download)](https://github.com/iishanmakkar/WinBatterySaver/releases/latest)
+[![CI](https://github.com/iishanmakkar/WinBatterySaver/actions/workflows/ci.yml/badge.svg)](https://github.com/iishanmakkar/WinBatterySaver/actions/workflows/ci.yml)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4)
+![Tests](https://img.shields.io/badge/tests-36%20passing-brightgreen)
+![License](https://img.shields.io/github/license/iishanmakkar/WinBatterySaver)
 
-<div align="center">
-  <img src="docs/screenshot.jpg" alt="WBS Application Screenshot" width="800">
-  <br>
-  <i>Modern Windows 11 Fluent UI with Dark Mode, Glassmorphism, and Battery History Line Chart</i>
+**[⬇️ Download the latest installer](https://github.com/iishanmakkar/WinBatterySaver/releases/latest)** — free, MIT licensed, works on Dell / HP / Lenovo / Asus / Acer / any laptop
+
 </div>
 
 ---
 
-## 📑 Table of Contents
+<img src="docs/app-screenshot.png" alt="WBS in action — EcoQoS throttling 74 background processes while Power Saver is on" width="720" align="right">
 
-- [Key Features](#-key-features)
-- [Installation](#-installation)
-- [Building & Running](#-building--running)
-- [Architecture](#-architecture)
-- [Contributing](#-contributing)
-- [License](#-license)
+## Why WBS?
 
----
+Windows already has power plans. OEMs (Dell Power Manager, Lenovo Vantage…) ship their own tools — but only for *their* hardware. **WBS brings the same class of battery management to every laptop**, using only standard Windows APIs:
 
-## ✨ Key Features
+- 🔋 **Real Efficiency Mode for background apps** — WBS applies Microsoft's [EcoQoS](https://learn.microsoft.com/en-us/windows/win32/procthread/quality-of-service) (the green leaf in Task Manager) to background processes automatically. Not fake "RAM boosting" — actual CPU efficiency states.
+- 🪫 **Auto Power Saver at low battery** — at your threshold (default 20%), WBS enables Power Saver, dims the screen, and drops background apps into Efficiency Mode *before* your laptop dies. One-shot per discharge, re-arms automatically.
+- 🔌 **Smart plug/unplug automation** — unplugged? Power Saver + brightness 40%. Plugged back in? Everything restores.
+- 👁️ **Never touches what you're using** — visible windows, the foreground app and its process tree, plus all shell/system processes are exempt. Background throttling that only throttles *background*.
+- 📊 **Battery health & cycle count** — design vs. full-charge capacity, wear %, cycle count, live health bar.
+- 📉 **Drain analytics** — live history chart (1h–7d), %/hour drain rate, sudden-drop detection with the top drainer named.
+- 🧹 **One-click optimizer** — Power Saver + brightness + background RAM trim, guaranteed lag-free.
+- ⏱️ **Idle dimming** — screen dims after configurable idle minutes, restores instantly.
+- 🔔 **Charge-limit reminders** — toast at your limit (default 80%) to protect long-term battery health.
+- 🖥️ **Full tray app** — starts minimized, global hotkey (Ctrl+Alt+B), single instance, Windows 11 style UI, dark & light themes.
 
-- **⚡ EnergyStar EcoQoS Throttling**: Automatically applies Windows **Efficiency Mode (EcoQoS)** to background processes when they lose focus. Reduces background CPU power consumption by 15%–30% without slowing active foreground applications.
-- **🎨 Windows 11 Fluent UI**: Modern interface with seamless **Dark** and **Light** themes, sleek TabPane navigation, custom scrollbars, and high-contrast typography.
-- **🧹 One-Click RAM & Power Optimizer**: Clears cached RAM (`EmptyWorkingSet`) to reduce background memory/disk paging and lowers display brightness.
-- **🔋 Battery Health & Cycle Tracking**: Reads design capacity, full charge capacity, wear %, and charge cycles directly from system hardware.
-- **🪫 Auto Power Saver at Low Battery**: At your chosen threshold (default 20%), Power Saver engages automatically **and** background apps drop into Efficiency Mode — a maximum-runtime safety net so the laptop never just dies.
-- **📈 Adaptive History & Drain Analytics**: Live, interactive battery history line chart tracking battery percentage trends over 1h, 2h, 6h, 24h, or 7d.
-- **🛡️ Smart Power Saver Fallback**: Automatically creates and restores Windows Power Saver schemes, or applies software-based throttling on Modern Standby / GPO-restricted laptops.
-- **🔔 Charge Limit Reminders**: Notifies when battery reaches the recommended 80% charge limit to prevent battery degradation and heat stress.
-- **⚙️ Auto-Start & Tray Operations**: Automatically starts minimized to the Windows system tray (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+<br clear="all">
 
 ---
 
-## 💾 Installation
+## 📥 Install
 
-1. Go to the [Releases](https://github.com/iishanmakkar/WinBatterySaver/releases) page and download the latest **`WindowsBatterySaver-<version>.exe`** installer (or the portable `.zip` — no install needed).
-2. Double-click the installer. Upgrades from older versions install in place, keeping your settings.
-> **Note**: Because this is a free, open-source tool signed with a free self-signed certificate, Windows SmartScreen may show a blue "Windows protected your PC" warning. This is perfectly normal. Just click **More info** -> **Run anyway** to proceed with the installation.
-3. Once installed, the app starts minimized in your system tray (bottom right corner).
-4. **Auto-start is automatic**: on first launch the app registers itself in the Windows Run key (`HKCU\...\CurrentVersion\Run`) pointing at the *installed exe path*, and **self-heals** on every launch — if the app moves or updates, it re-registers itself so it always starts with Windows (as long as Auto-Start is checked in Settings).
+1. **[Download the installer](https://github.com/iishanmakkar/WinBatterySaver/releases/latest)** → `WindowsBatterySaver-x.y.z.exe` (portable `.zip` also available — just extract and run).
+2. Run it. Windows SmartScreen may ask for confirmation on first run (free self-signed certificate):
+
+   <details><summary><i>Why does SmartScreen show a warning?</i></summary>
+   Code-signing certificates cost $100–400/year. WBS is free open source, so it ships signed with a free self-signed certificate — the signature and publisher are verifiable, but Windows doesn't recognize the certificate authority yet. Click <b>More info → Run anyway</b>. The code is fully open source — build it yourself if you prefer.
+   </details>
+
+3. That's it. WBS lives in your system tray. **Auto-start with Windows is configured automatically** — no account, no subscription, no upsell.
+
+> **Upgrading:** just run the new installer — it updates in place and keeps your settings. Uninstall anytime from Settings → Apps.
 
 ---
 
-## 🛠️ Building & Running
+## 🧠 How it works (no magic)
 
-### Requirements
-- **OS**: Windows 10 (1709+) or Windows 11
-- **JDK**: Java 17+ (bytecode target 17 / OpenJFX 21.0.2)
-- **Build System**: Gradle (wrapper included)
+| Feature | Mechanism |
+|---|---|
+| Efficiency Mode | Windows **EcoQoS** via `SetProcessInformation` (JNA) — the same API Task Manager uses |
+| Power plans | `powercfg` + `PowerGetActiveScheme`; verifies every switch, restores your original plan |
+| Battery data | `GetSystemPowerStatus` + `powercfg /batteryreport` parsing (multi-battery aware) |
+| Brightness | WMI `WmiMonitorBrightnessMethods` — cross-OEM, 3s timeout, graceful fallback |
+| Exemptions | `EnumWindows` visibility check + foreground process-tree walk — visible apps are never throttled |
+| Auto-start | Self-healing `HKCU\...\Run` registration that survives app updates and moves |
 
-### Build Executable & Run
+**What WBS will never do:** require admin for basic use, install drivers or services, run anything at startup besides itself, phone home (the update check is manual-only), or show ads.
+
+<details>
+<summary><b>FAQ</b></summary>
+
+**Does it work on my Dell/HP/Lenovo/Asus?** Yes — WBS uses standard Windows APIs, not OEM SDKs. Brightness control needs a WMI-capable panel (virtually all laptops); everything else works everywhere.
+
+**Does it need Administrator?** No. EcoQoS covers all your normal-user processes without it. An optional *Restart as Administrator* in Settings extends throttling to elevated/background-service processes too.
+
+**Will it slow my laptop down?** Visible/foreground apps are never touched. Background apps get lower CPU *efficiency* states (that's the point) and return to full speed the moment you focus them.
+
+**Is the RAM optimizer safe?** It trims background processes only — never dwm/explorer/shell, never your foreground app, never anything with a visible window.
+
+**Uninstalling?** Settings → Apps → WindowsBatterySaver. WBS removes its autostart entry and un-throttles everything it touched on exit.
+</details>
+
+---
+
+## 🛠️ Build from source
+
 ```powershell
-# Clone repository
 git clone https://github.com/iishanmakkar/WinBatterySaver.git
 cd WinBatterySaver
-
-# Compile and run unit tests
-.\gradlew.bat test
-
-# Build and launch application
-.\gradlew.bat run
-
-# Build standalone JAR
-.\gradlew.bat jar
+gradlew test          # 36 tests (Windows)
+gradlew releaseBundle # build/dist → signed installer .exe + portable zip + SHA256
 ```
 
----
+Requirements: Windows 10/11, JDK 17+ (code targets 17, ships with its own bundled JRE), WiX 3.14 for the installer. Code signing uses the free persistent cert in `packaging/sign-cert.ps1`.
 
-## 🏗️ Architecture
+<details>
+<summary>Project layout</summary>
 
-```text
-com.batterysaver
- ├── constants/       # AppConstants & Configuration Defaults
- ├── interop/         # JNA Native Win32 API Bindings (Kernel32, User32, PowerThrottling)
- ├── model/           # Battery Status & Power Plan Models
- ├── service/         # Core Services (EcoQoS, Health, Optimizer, Brightness, Hotkey)
- ├── util/            # PortableMode & SingleInstanceGuard
- ├── view/            # JavaFX Views (ExpandedView, CompactView, TrayManager, Chart)
- └── viewmodel/       # Reactive MainViewModel with FX Property Bindings
 ```
-
----
-
-## ☕ Support
-Created by [Ishan Makkar](https://buymeacoffee.com/iishanmakkar). If you find this project helpful, consider buying me a coffee!
-
----
-
-## 📜 License
-Released under the [MIT License](LICENSE). Free for personal and commercial use.
+src/main/java/com/batterysaver/
+├── Main.java               # app wiring, tray, pollers, autostart self-heal
+├── interop/                # JNA: Kernel32, User32, PowrProf, Shell32
+├── service/                # battery, EcoQoS, power plan, brightness, health, hotkey…
+├── view/                   # ExpandedView (tabs), TrayManager, CustomTitleBar, chart
+├── viewmodel/              # MainViewModel — state + 5s poll pipeline
+└── util/                   # AppExe, ProcessTree, VisibleWindows, elevation…
+```
+</details>
 
 ---
 
 ## 🤝 Contributing
-We welcome contributions from the community! If you have suggestions for new features, bug fixes, or improvements, please feel free to:
 
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature/your-feature-name`).
-3. Make your changes.
-4. Commit your changes (`git commit -m 'Add new feature'`).
-5. Push to the branch (`git push origin feature/your-feature-name`).
-6. Open a Pull Request.
+Issues and PRs welcome! Good first contributions: translations, more OEM-specific tips for the Health tab, installer polish. Please run `gradlew test` before submitting.
+
+## ⭐ Support
+
+If WBS saves your battery, **star the repo** — it helps other laptop users find it.
+
+<a href="https://github.com/iishanmakkar/WinBatterySaver/stargazers"><img src="https://reporainbow.com/github/iishanmakkar/WinBatterySaver/star.svg" alt="Star chart"></a>
+
+## 📄 License
+
+[MIT](LICENSE) — free for personal and commercial use. Built with JDK 17+, JavaFX 21, JNA 5.14.
