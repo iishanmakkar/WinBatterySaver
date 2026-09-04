@@ -9,7 +9,9 @@ version = '1.0.3'
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        // 17 everywhere: code targets 17, CI (GitHub runners) has Temurin 17,
+        // jpackage bundles the matching JRE. Kept in sync with README/About text.
+        languageVersion = JavaLanguageVersion.of(17)
     }
 }
 
