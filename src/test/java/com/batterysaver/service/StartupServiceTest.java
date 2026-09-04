@@ -114,25 +114,31 @@ public class StartupServiceTest {
     @Test
     void ensureRegisteredHealsMissingAndStaleEntries() {
         Assumptions.assumeTrue(runKeyWritable, "HKCU Run key not writable (CI runner) - skipping");
+        // Use a path that REALLY exists on the host (the test JVM): ensureRegistered
+        // validates file existence when deciding "points at us" vs "stale"
+        String exe = ProcessHandle.current().info().command().orElse(null);
+        org.junit.jupiter.api.Assumptions.assumeTrue(exe != null && java.nio.file.Files.isRegularFile(java.nio.file.Path.of(exe)),
+                "no resolvable running exe on this host");
+        String movedPath = java.nio.file.Path.of(exe).getParent().resolve("wbs-moved-target.exe").toString();
         ss.disable();
         try {
             // 1) wants=false: entry must stay gone
-            String result = ss.ensureRegistered("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe", false);
+            String result = ss.ensureRegistered(exe, false);
             assertFalse(ss.isEnabled(), "wantsAutoStart=false must not register");
 
             // 2) wants=true, nothing registered -> enable
-            result = ss.ensureRegistered("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe", true);
+            result = ss.ensureRegistered(exe, true);
             assertTrue(result.startsWith("enabled"), "first registration should report enabled: " + result);
-            assertTrue(ss.getRegisteredCommand().contains("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe"));
+            assertTrue(ss.getRegisteredCommand().contains(exe));
 
             // 3) same path again -> idempotent, no rewrite churn
-            result = ss.ensureRegistered("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe", true);
+            result = ss.ensureRegistered(exe, true);
             assertEquals("enabled", result);
 
             // 4) app moved -> repair to the NEW path
-            result = ss.ensureRegistered("D:\\Apps\\WindowsBatterySaver\\WindowsBatterySaver.exe", true);
+            result = ss.ensureRegistered(movedPath, true);
             assertTrue(result.startsWith("repaired"), "path change must repair: " + result);
-            assertTrue(ss.getRegisteredCommand().contains("D:\\Apps\\WindowsBatterySaver\\WindowsBatterySaver.exe"),
+            assertTrue(ss.getRegisteredCommand().contains(movedPath),
                     "registry must point at the new path after repair");
 
             // 5) wants=false afterwards must clear the entry again
