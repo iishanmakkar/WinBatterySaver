@@ -21,6 +21,9 @@ public class SettingsService {
         public int criticalBatteryThreshold = 10;
         public int dimPercent = 40;
         public boolean autoStart = true;
+        // Auto Power Saver at low battery: when discharging at or below this %,
+        // Power Saver is enabled automatically (0 disables). Maximum-runtime safety net.
+        public int autoSaverAtPercent = 20;
         // Phase 7-9 new fields
         public int chargeLimitPercent = 80; // 60-100
         public boolean chargeLimitEnabled = true;
@@ -42,6 +45,7 @@ public class SettingsService {
             c.criticalBatteryThreshold = criticalBatteryThreshold;
             c.dimPercent = dimPercent;
             c.autoStart = autoStart;
+            c.autoSaverAtPercent = autoSaverAtPercent;
             c.chargeLimitPercent = chargeLimitPercent;
             c.chargeLimitEnabled = chargeLimitEnabled;
             c.hotkeyModifiers = hotkeyModifiers;
@@ -69,6 +73,7 @@ public class SettingsService {
         c.criticalBatteryThreshold = prefs.getInt("criticalBatteryThreshold", 10);
         c.dimPercent = prefs.getInt("dimPercent", 40);
         c.autoStart = prefs.getBoolean("autoStart", true);
+        c.autoSaverAtPercent = prefs.getInt("autoSaverAtPercent", 20);
         c.chargeLimitPercent = prefs.getInt("chargeLimitPercent", 80);
         c.chargeLimitEnabled = prefs.getBoolean("chargeLimitEnabled", true);
         c.hotkeyModifiers = prefs.getInt("hotkeyModifiers", 0x0003);
@@ -88,6 +93,8 @@ public class SettingsService {
 
     public static void save(Config cfg) {
         // Clamp
+        if (cfg.autoSaverAtPercent < 0) cfg.autoSaverAtPercent = 0;
+        if (cfg.autoSaverAtPercent > 60) cfg.autoSaverAtPercent = 60;
         if (cfg.chargeLimitPercent < 60) cfg.chargeLimitPercent = 60;
         if (cfg.chargeLimitPercent > 100) cfg.chargeLimitPercent = 100;
 
@@ -106,6 +113,7 @@ public class SettingsService {
         prefs.putInt("criticalBatteryThreshold", cfg.criticalBatteryThreshold);
         prefs.putInt("dimPercent", cfg.dimPercent);
         prefs.putBoolean("autoStart", cfg.autoStart);
+        prefs.putInt("autoSaverAtPercent", cfg.autoSaverAtPercent);
         prefs.putInt("chargeLimitPercent", cfg.chargeLimitPercent);
         prefs.putBoolean("chargeLimitEnabled", cfg.chargeLimitEnabled);
         prefs.putInt("hotkeyModifiers", cfg.hotkeyModifiers);
@@ -157,6 +165,7 @@ public class SettingsService {
                 "  \"criticalBatteryThreshold\": " + c.criticalBatteryThreshold + ",\n" +
                 "  \"dimPercent\": " + c.dimPercent + ",\n" +
                 "  \"autoStart\": " + c.autoStart + ",\n" +
+                "  \"autoSaverAtPercent\": " + c.autoSaverAtPercent + ",\n" +
                 "  \"chargeLimitPercent\": " + c.chargeLimitPercent + ",\n" +
                 "  \"chargeLimitEnabled\": " + c.chargeLimitEnabled + ",\n" +
                 "  \"hotkeyModifiers\": " + c.hotkeyModifiers + ",\n" +
@@ -178,6 +187,7 @@ public class SettingsService {
             c.criticalBatteryThreshold = extractInt(json, "criticalBatteryThreshold", c.criticalBatteryThreshold);
             c.dimPercent = extractInt(json, "dimPercent", c.dimPercent);
             c.autoStart = extractBool(json, "autoStart", c.autoStart);
+            c.autoSaverAtPercent = extractInt(json, "autoSaverAtPercent", c.autoSaverAtPercent);
             c.chargeLimitPercent = extractInt(json, "chargeLimitPercent", c.chargeLimitPercent);
             c.chargeLimitEnabled = extractBool(json, "chargeLimitEnabled", c.chargeLimitEnabled);
             c.hotkeyModifiers = extractInt(json, "hotkeyModifiers", c.hotkeyModifiers);
@@ -189,6 +199,8 @@ public class SettingsService {
             c.theme = extractString(json, "theme", c.theme);
             c.ecoQosEnabled = extractBool(json, "ecoQosEnabled", c.ecoQosEnabled);
             c.ecoQosWhitelistStr = extractString(json, "ecoQosWhitelistStr", c.ecoQosWhitelistStr);
+            if (c.autoSaverAtPercent < 0) c.autoSaverAtPercent = 0;
+            if (c.autoSaverAtPercent > 60) c.autoSaverAtPercent = 60;
             if (c.chargeLimitPercent < 60) c.chargeLimitPercent = 60;
             if (c.chargeLimitPercent > 100) c.chargeLimitPercent = 100;
             return c;

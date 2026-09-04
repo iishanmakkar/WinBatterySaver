@@ -6,6 +6,7 @@ import com.sun.jna.platform.win32.Kernel32;
 import com.sun.jna.platform.win32.WinBase;
 import com.sun.jna.platform.win32.WinNT.HANDLE;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * WMC-like optimizer for battery: clears cached RAM to reduce background CPU/disk,
@@ -115,17 +116,33 @@ public class BatteryOptimizerService {
                 } catch (Exception ignored) {}
             }
 
+            // SAFETY: never page out processes whose memory is actively needed -
+            // trimming dwm/csrss/the foreground app or anything with a visible
+            // window forces hard-fault storms (disk thrash -> user-visible hang).
+            // The EcoQoS default whitelist already covers shell/system/console
+            // criticals + apps that misbehave when squeezed.
+            Set<String> safeList = EcoQosThrottleService.DEFAULT_WHITELIST;
+            Set<Long> visible = com.batterysaver.util.VisibleWindows.visibleWindowPids();
+            long foregroundPid = foregroundProcessId();
             int PROCESS_SET_QUOTA = 0x0100;
             int PROCESS_QUERY_INFORMATION = 0x0400;
             for (ProcessHandle ph : ProcessHandle.allProcesses().toList()) {
                 long pid = ph.pid();
                 if (pid == 0 || pid == 4) continue;
                 if (pid == ProcessHandle.current().pid()) continue;
+                // Visible window owner (non-minimized) = in active use - skip
+                if (visible.contains(pid)) continue;
+                // Foreground process and its whole tree - skip
+                if (foregroundPid > 0 && com.batterysaver.util.ProcessTree.isInTree(pid, foregroundPid)) continue;
+                String exeName = ph.info().command().orElse("");
+                int slash = Math.max(exeName.lastIndexOf('\\'), exeName.lastIndexOf('/'));
+                if (slash >= 0) exeName = exeName.substring(slash + 1).toLowerCase();
+                if (!exeName.isEmpty() && safeList.contains(exeName)) continue;
                 HANDLE h = null;
                 try {
                     h = Kernel32.INSTANCE.OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, false, (int) pid);
                     if (h == null || h.equals(WinBase.INVALID_HANDLE_VALUE)) {
-                        errs++;
+                        // Skipped (permission denied) - not an error worth alarming the user
                         continue;
                     }
                     boolean ok = false;
@@ -151,6 +168,7 @@ public class BatteryOptimizerService {
                         Kernel32.INSTANCE.CloseHandle(h);
                     }
                 }
+                // Yield between batches so the trim itself never saturates a core
                 if (trimmed % 40 == 0) {
                     try { Thread.sleep(2); } catch (InterruptedException ignored) {}
                 }
@@ -158,6 +176,20 @@ public class BatteryOptimizerService {
         }
 
         return new Result(trimmed, errs, psOn, brightOk);
+    }
+
+    /** PID of the foreground window's owner, 0 when unavailable. */
+    private static long foregroundProcessId() {
+        try {
+            com.sun.jna.platform.win32.WinDef.HWND fg =
+                    com.sun.jna.platform.win32.User32.INSTANCE.GetForegroundWindow();
+            if (fg == null) return 0;
+            com.sun.jna.ptr.IntByReference pid = new com.sun.jna.ptr.IntByReference();
+            com.sun.jna.platform.win32.User32.INSTANCE.GetWindowThreadProcessId(fg, pid);
+            return pid.getValue();
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     public String topDrainerSuggestion() {
@@ -171,7 +203,7 @@ public class BatteryOptimizerService {
             String lower = name.toLowerCase();
             boolean isSystem = lower.equals("system") || lower.equals("registry") || lower.equals("wininit.exe") || lower.equals("csrss.exe") || lower.equals("services.exe") || lower.equals("svchost.exe");
             if (isSystem) return String.format("Top: %s (%.1f%%) system - do not kill. Check next.", name, cpu);
-            return String.format("Kill candidate: %s (%.1f%% CPU) - closing may save ~%d min.", name, cpu, Math.round(cpu * 0.8));
+            return String.format("Top drainer: %s (%.1f%% CPU) - closing it would cut this draw to ~zero.", name, cpu);
         } catch (Exception ex) {
             return "Unable to determine top drainer: " + ex.getMessage();
         }

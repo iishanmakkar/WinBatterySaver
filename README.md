@@ -43,6 +43,7 @@ WBS (Windows Battery Saver) is an open-source, production-ready utility designed
 - **🎨 Windows 11 Fluent UI**: Modern interface with seamless **Dark** and **Light** themes, sleek TabPane navigation, custom scrollbars, and high-contrast typography.
 - **🧹 One-Click RAM & Power Optimizer**: Clears cached RAM (`EmptyWorkingSet`) to reduce background memory/disk paging and lowers display brightness.
 - **🔋 Battery Health & Cycle Tracking**: Reads design capacity, full charge capacity, wear %, and charge cycles directly from system hardware.
+- **🪫 Auto Power Saver at Low Battery**: At your chosen threshold (default 20%), Power Saver engages automatically **and** background apps drop into Efficiency Mode — a maximum-runtime safety net so the laptop never just dies.
 - **📈 Adaptive History & Drain Analytics**: Live, interactive battery history line chart tracking battery percentage trends over 1h, 2h, 6h, 24h, or 7d.
 - **🛡️ Smart Power Saver Fallback**: Automatically creates and restores Windows Power Saver schemes, or applies software-based throttling on Modern Standby / GPO-restricted laptops.
 - **🔔 Charge Limit Reminders**: Notifies when battery reaches the recommended 80% charge limit to prevent battery degradation and heat stress.
@@ -52,10 +53,11 @@ WBS (Windows Battery Saver) is an open-source, production-ready utility designed
 
 ## 💾 Installation
 
-1. Go to the [Releases](https://github.com/iishanmakkar/WinBatterySaver/releases) page and download the latest `.exe` installer.
-2. Double-click the installer to run it.
-> **Note**: Because this is a free, open-source tool signed with a self-signed certificate, Windows SmartScreen may show a blue "Windows protected your PC" warning. This is perfectly normal. Just click **More info** -> **Run anyway** to proceed with the installation.
-3. Once installed, the app will run minimized in your system tray (bottom right corner).
+1. Go to the [Releases](https://github.com/iishanmakkar/WinBatterySaver/releases) page and download the latest **`WindowsBatterySaver-<version>.exe`** installer (or the portable `.zip` — no install needed).
+2. Double-click the installer. Upgrades from older versions install in place, keeping your settings.
+> **Note**: Because this is a free, open-source tool signed with a free self-signed certificate, Windows SmartScreen may show a blue "Windows protected your PC" warning. This is perfectly normal. Just click **More info** -> **Run anyway** to proceed with the installation.
+3. Once installed, the app starts minimized in your system tray (bottom right corner).
+4. **Auto-start is automatic**: on first launch the app registers itself in the Windows Run key (`HKCU\...\CurrentVersion\Run`) pointing at the *installed exe path*, and **self-heals** on every launch — if the app moves or updates, it re-registers itself so it always starts with Windows (as long as Auto-Start is checked in Settings).
 
 ---
 

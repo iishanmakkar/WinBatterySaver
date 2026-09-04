@@ -83,6 +83,7 @@ public class ServiceUnitTest {
         c.dimPercent = 55;
         c.lowBatteryThreshold = 25;
         c.criticalBatteryThreshold = 12;
+        c.autoSaverAtPercent = 30;
 
         String json = SettingsService.toJson(c);
         SettingsService.Config back = SettingsService.fromJson(json);
@@ -101,6 +102,7 @@ public class ServiceUnitTest {
         assertEquals(55, back.dimPercent);
         assertEquals(25, back.lowBatteryThreshold);
         assertEquals(12, back.criticalBatteryThreshold);
+        assertEquals(30, back.autoSaverAtPercent);
     }
 
     @Test

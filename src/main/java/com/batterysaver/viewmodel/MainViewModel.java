@@ -78,8 +78,13 @@ public class MainViewModel {
     // True when the poller auto-started EcoQoS (vs the user starting it manually).
     // The poller only auto-STOPS what it auto-started - a manual "ON" is authoritative.
     private volatile boolean ecoQosAutoStarted = false;
+    // Auto Power Saver at low battery: one-shot per discharge below the threshold;
+    // re-arms when the battery recovers 5% above it (or AC connects).
+    private volatile boolean autoSaverFired = false;
     // Set by Main; receives sudden-drop messages for user-visible notification.
     private volatile Consumer<String> suddenDropListener;
+    // Set by Main; receives auto-saver notifications ("Power Saver enabled at 18%").
+    private volatile Consumer<String> autoSaverListener;
     // Serializes togglePowerSaver executions (button double-clicks, hotkey + poller).
     private final AtomicBoolean toggleInFlight = new AtomicBoolean(false);
 
@@ -101,6 +106,9 @@ public class MainViewModel {
         // Runtime EcoQoS master switch starts from the SAVED setting - a user who
         // disabled EcoQoS must not get throttling back after a restart
         this.ecoQosEnabled.set(cfg.ecoQosEnabled);
+        // Low-battery auto-saver is one-shot per discharge (autoSaverFired starts
+        // false on purpose: launching already below the threshold SHOULD engage it -
+        // it is a max-runtime safety net, and the 5s poll cadence is grace enough).
         // Sync to real OS state on start, not cached flag
         try {
             String cur = powerPlanService.getActivePlanGuid();
@@ -256,11 +264,37 @@ public class MainViewModel {
                 } catch (Exception ignored) {
                     isSaver = powerSaverService.isActiveReal();
                 }
-                final boolean fSaver = isSaver;
+
+                // Auto Power Saver at low battery (max-runtime safety net): when
+                // discharging at/below the configured %, enable Power Saver once.
+                // This also drags EcoQoS in: wantAuto below includes saver state, so
+                // ALL eligible background apps drop into Efficiency Mode too. Re-arms
+                // after a 5% recovery so a bounce-back can trigger it again.
+                String autoSaverMsg = null;
+                SettingsService.Config pollCfg = config;
                 // Only trust "on battery" once the battery state is CONFIRMED (pct >= 0).
                 // The pre-first-poll default (ac=false, pct=-1) must not count as
                 // "on battery" - that briefly auto-throttled desktops/AC machines at startup.
                 boolean onBatteryConfirmed = !fAc && fPct >= 0;
+                if (pollCfg.autoSaverAtPercent > 0 && onBatteryConfirmed) {
+                    int threshold = pollCfg.autoSaverAtPercent;
+                    if (!autoSaverFired && fPct <= threshold) {
+                        try {
+                            if (!isSaver) {
+                                powerSaverService.enable(pollCfg.dimPercent);
+                                isSaver = true; // EcoQoS wantAuto (below) sees it this tick
+                                autoSaverMsg = "Battery at " + fPct + "% - Power Saver enabled automatically. Background apps throttled for max runtime.";
+                            }
+                            autoSaverFired = true;
+                        } catch (Exception e) {
+                            System.err.println("Auto-saver low-battery failed: " + e.getMessage());
+                        }
+                    } else if (fPct > threshold + 5) {
+                        autoSaverFired = false;
+                    }
+                }
+                final String fAutoSaverMsg = autoSaverMsg;
+                final boolean fSaver = isSaver;
                 // Eco throttling (EnergyStarX-like, any laptop) - update based on battery + saver
                 try {
                     if (ecoService != null) {
@@ -292,6 +326,10 @@ public class MainViewModel {
                 // Notify the user about a sudden drop (not just the console)
                 if (suddenMsg != null && suddenDropListener != null) {
                     try { suddenDropListener.accept(suddenMsg); } catch (Exception ignored) {}
+                }
+                // Notify the user that auto Power Saver kicked in at low battery
+                if (fAutoSaverMsg != null && autoSaverListener != null) {
+                    try { autoSaverListener.accept(fAutoSaverMsg); } catch (Exception ignored) {}
                 }
                 int tc = ecoQosThrottleService != null ? ecoQosThrottleService.getThrottledCount() : 0;
                 final boolean fEcoQosRunning = ecoQosThrottleService.isEnabled();
@@ -466,6 +504,11 @@ public class MainViewModel {
     /** Set by Main: receives sudden-drop messages for user-visible notification. */
     public void setSuddenDropListener(Consumer<String> listener) {
         this.suddenDropListener = listener;
+    }
+
+    /** Set by Main: receives auto Power Saver notifications ("enabled at 18%"). */
+    public void setAutoSaverListener(Consumer<String> listener) {
+        this.autoSaverListener = listener;
     }
 
     /**

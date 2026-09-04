@@ -3,6 +3,9 @@ package com.batterysaver.service;
 import com.sun.jna.platform.win32.Advapi32Util;
 import com.sun.jna.platform.win32.WinReg;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 /**
  * Manages Windows startup registration via HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
  * HKCU is user-writable without admin, so this works on standard accounts.
@@ -59,5 +62,76 @@ public class StartupService {
             }
         } catch (Exception ignored) {}
         return null;
+    }
+
+    /**
+     * True when a Run entry exists but no longer points at a valid exe (app
+     * moved, uninstalled copy deleted) - Windows would silently fail to launch
+     * us at logon. The Settings checkbox shows ON in this state, so callers
+     * repair it by re-registering with the current path.
+     */
+    public boolean isRegisteredStale() {
+        String cmd = getRegisteredCommand();
+        if (cmd == null || cmd.isBlank()) return false;
+        String exe = extractExePath(cmd);
+        return exe == null || !Files.isRegularFile(Path.of(exe));
+    }
+
+    /**
+     * Extract the exe path from a registered command: the first quoted token,
+     * or the text before " --minimized" for unquoted legacy entries.
+     */
+    static String extractExePath(String cmd) {
+        String c = cmd.trim();
+        if (c.startsWith("\"")) {
+            int end = c.indexOf('"', 1);
+            if (end > 1) return c.substring(1, end);
+            return null;
+        }
+        int cut = c.indexOf(" --");
+        return cut > 0 ? c.substring(0, cut).trim() : (c.isEmpty() ? null : c);
+    }
+
+    /**
+     * Self-heal autostart at app launch. Runs automatically so the checkbox in
+     * Settings stays truthful even if the user never opens Settings: a missing
+     * entry (or one pointing at a moved/updated/old copy) is re-registered to
+     * the CURRENT exe path, but only when the saved setting wants autostart.
+     *
+     * @return "enabled", "repaired", or "off" (diagnostic string, also logged)
+     */
+    public String ensureRegistered(String exePath, boolean wantsAutoStart) {
+        String result;
+        try {
+            if (!wantsAutoStart) {
+                // Setting is off - make sure no stale entry lingers from an old build
+                if (isEnabled()) {
+                    disable();
+                    result = "off (removed stale entry)";
+                } else {
+                    result = "off";
+                }
+            } else if (exePath == null || exePath.isBlank()) {
+                // Dev run (java.exe): never register a JVM; keep any real entry untouched
+                result = isEnabled() ? "enabled (dev run - existing entry kept)" : "off (dev run)";
+            } else {
+                String cmd = getRegisteredCommand();
+                String registeredExe = cmd != null ? extractExePath(cmd) : null;
+                boolean pointsAtUs = registeredExe != null
+                        && registeredExe.equalsIgnoreCase(exePath)
+                        && Files.isRegularFile(Path.of(registeredExe));
+                if (pointsAtUs) {
+                    result = "enabled";
+                } else {
+                    enable(exePath);
+                    result = cmd == null ? "enabled (first run)" : "repaired (path changed)";
+                }
+            }
+        } catch (Exception e) {
+            result = "failed: " + e.getMessage();
+            System.err.println("StartupService.ensureRegistered: " + result);
+        }
+        System.out.println("Auto-start: " + result);
+        return result;
     }
 }

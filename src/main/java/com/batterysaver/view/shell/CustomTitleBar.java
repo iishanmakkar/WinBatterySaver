@@ -34,10 +34,19 @@ public class CustomTitleBar extends HBox {
         setPrefHeight(36);
         setMinHeight(36);
 
-        // App glyph (simple battery unicode or label)
-        Label icon = new Label("\u25A3"); // placeholder glyph, CSS colors it
-        icon.getStyleClass().add("titlebar-icon");
-        icon.setStyle("-fx-font-size: 14px; -fx-text-fill: -wbs-accent-good;");
+        // Real battery glyph (same drawing as the tray icon) - a raw unicode
+        // placeholder renders inconsistently across Windows font configurations
+        javafx.scene.image.Image appIcon = com.batterysaver.util.IconUtil.createFxBatteryIcon(16);
+        if (appIcon != null) {
+            javafx.scene.image.ImageView iv = new javafx.scene.image.ImageView(appIcon);
+            iv.setFitWidth(16); iv.setFitHeight(16);
+            getChildren().add(iv);
+        } else {
+            Label icon = new Label("\u25A3"); // fallback glyph, CSS colors it
+            icon.getStyleClass().add("titlebar-icon");
+            icon.setStyle("-fx-font-size: 14px; -fx-text-fill: -wbs-accent-good;");
+            getChildren().add(icon);
+        }
 
         titleLabel = new Label(title != null ? title : AppConstants.WINDOW_TITLE_EXPANDED);
         titleLabel.getStyleClass().add("titlebar-title");
@@ -63,7 +72,7 @@ public class CustomTitleBar extends HBox {
             else stage.hide();
         });
 
-        getChildren().addAll(icon, titleLabel, spacer, minBtn);
+        getChildren().addAll(titleLabel, spacer, minBtn);
         if (showMax) getChildren().add(maxBtn);
         getChildren().add(closeBtn);
 

@@ -117,6 +117,8 @@ public class Main extends Application {
 
         // Sudden-drop detection -> user-visible toast (was console-only)
         viewModel.setSuddenDropListener(msg -> notifier.showWarning("Sudden battery drop", msg));
+        // Low-battery auto Power Saver -> user-visible toast
+        viewModel.setAutoSaverListener(msg -> notifier.showInfo("Power Saver enabled automatically", msg));
 
         // When the main window is hidden, action errors (e.g. Power Saver blocked by
         // policy) surface as a tray toast; ExpandedView shows the alert when visible.
@@ -209,42 +211,24 @@ public class Main extends Application {
             Platform.runLater(() -> windowCoordinator.showExpanded());
         }
 
-        // Update check if enabled
-        if (cfg.updateCheckEnabled) {
-            Thread updateThread = new Thread(() -> {
-                try { Thread.sleep(4000); } catch (InterruptedException ignored) {}
-                UpdateCheckService svc = new UpdateCheckService();
-                UpdateCheckService.UpdateInfo info = svc.check(cfg.updateRepoSlug);
-                if (info != null && info.newer()) {
-                    Platform.runLater(() -> {
-                        // Tray toast always (silent, non-intrusive)
-                        if (trayManager != null) {
-                            trayManager.showMessage("WBS update available", info.latestTag() + " available - click to open releases");
-                        }
-                        // Modal alert ONLY when the window is visible - a hidden tray
-                        // app must never steal focus with a dialog
-                        if (expandedStage != null && expandedStage.isShowing()) {
-                            javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.INFORMATION);
-                            a.setTitle("Update available");
-                            a.setHeaderText(AppConstants.APP_FULL_NAME + " " + info.latestTag() + " is available");
-                            a.setContentText("Current: v" + VERSION + "\nLatest: " + info.latestTag() + "\n\nOpen releases page?");
-                            a.getButtonTypes().setAll(javafx.scene.control.ButtonType.YES, javafx.scene.control.ButtonType.NO);
-                            a.initOwner(expandedStage);
-                            a.showAndWait().ifPresent(bt -> {
-                                if (bt == javafx.scene.control.ButtonType.YES) {
-                                    try { java.awt.Desktop.getDesktop().browse(java.net.URI.create(info.htmlUrl())); } catch (Exception ex) {}
-                                }
-                            });
-                        }
-                    });
-                }
-            }, "update-check");
-            updateThread.setDaemon(true);
-            updateThread.start();
-        }
+        // Self-heal autostart on every launch: if the user wants auto-start, the
+        // HKCU Run entry must exist and point at THIS exe (survives app moves and
+        // updates that change the install path). Previously a stale entry pointing
+        // at an old location silently stopped working while Settings still showed ON.
+        Thread autostartHeal = new Thread(() -> {
+            try {
+                String exe = com.batterysaver.util.AppExe.currentExePath();
+                new StartupService().ensureRegistered(exe, cfg.autoStart || minimizedArg);
+            } catch (Exception e) {
+                System.err.println("Autostart self-heal failed: " + e.getMessage());
+            }
+        }, "autostart-heal");
+        autostartHeal.setDaemon(true);
+        autostartHeal.start();
 
-        // Coordinator already positions near tray / centered; no extra manual placement needed
-        
+        // Update check ONLY when the user asks for it (Settings -> "Check for
+        // updates now"). No automatic/network checks at startup: silent tray app
+        // must never phone home on its own.
     }
 
     private void showExpanded() {

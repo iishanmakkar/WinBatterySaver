@@ -90,6 +90,11 @@
     -fx-text-fill: -wbs-text;
 }
 
+/* Big dashboard battery % (center of the status ring) */
+.status-pct {
+    -fx-text-fill: -wbs-text;
+}
+
 .banner-warn {
     -fx-background-color: derive(-wbs-accent-warn, 80%);
     -fx-border-color: -wbs-accent-warn;

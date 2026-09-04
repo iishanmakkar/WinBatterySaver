@@ -89,4 +89,45 @@ public class StartupServiceTest {
             ss.disable();
         }
     }
+
+    @Test
+    void ensureRegisteredHealsMissingAndStaleEntries() {
+        ss.disable();
+        try {
+            // 1) wants=false: entry must stay gone
+            String result = ss.ensureRegistered("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe", false);
+            assertFalse(ss.isEnabled(), "wantsAutoStart=false must not register");
+
+            // 2) wants=true, nothing registered -> enable
+            result = ss.ensureRegistered("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe", true);
+            assertTrue(result.startsWith("enabled"), "first registration should report enabled: " + result);
+            assertTrue(ss.getRegisteredCommand().contains("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe"));
+
+            // 3) same path again -> idempotent, no rewrite churn
+            result = ss.ensureRegistered("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe", true);
+            assertEquals("enabled", result);
+
+            // 4) app moved -> repair to the NEW path
+            result = ss.ensureRegistered("D:\\Apps\\WindowsBatterySaver\\WindowsBatterySaver.exe", true);
+            assertTrue(result.startsWith("repaired"), "path change must repair: " + result);
+            assertTrue(ss.getRegisteredCommand().contains("D:\\Apps\\WindowsBatterySaver\\WindowsBatterySaver.exe"),
+                    "registry must point at the new path after repair");
+
+            // 5) wants=false afterwards must clear the entry again
+            ss.ensureRegistered(null, false);
+            assertFalse(ss.isEnabled(), "wants=false must clear a stale entry");
+        } finally {
+            ss.disable();
+        }
+    }
+
+    @Test
+    void extractExePathParsesQuotedAndLegacyFormats() {
+        assertEquals("C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe",
+                StartupService.extractExePath("\"C:\\Program Files\\WindowsBatterySaver\\WindowsBatterySaver.exe\" --minimized"));
+        assertEquals("C:\\tools\\wbs.exe",
+                StartupService.extractExePath("C:\\tools\\wbs.exe --minimized"));
+        assertEquals("C:\\quoted\\only.exe",
+                StartupService.extractExePath("\"C:\\quoted\\only.exe\""));
+    }
 }

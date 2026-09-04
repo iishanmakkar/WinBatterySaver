@@ -320,7 +320,7 @@ public class ExpandedView {
         optimizeCard.setPadding(new Insets(12));
         Label optTitle = new Label("One-Click RAM & Power Optimizer");
         optTitle.getStyleClass().add("card-title");
-        Label optDesc = new Label("Enable Power Saver, lower brightness to 40%, and clear cached RAM. Frees RAM without closing apps.");
+        Label optDesc = new Label("Enable Power Saver, lower brightness to 40%, and free cached RAM from background apps. Your visible apps and Windows shell are never touched - no lag.");
         optDesc.setWrapText(true);
         optDesc.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;");
         BatteryOptimizerService optimizer = new BatteryOptimizerService(vm.getPowerSaverService());
@@ -366,7 +366,7 @@ public class ExpandedView {
         Label chartTitle = new Label("Battery History");
         chartTitle.getStyleClass().add("card-title");
         Region sp = new Region(); HBox.setHgrow(sp, Priority.ALWAYS);
-        rangeBox = new ComboBox<>(FXCollections.observableArrayList("2h", "1h", "6h", "24h", "7d"));
+        rangeBox = new ComboBox<>(FXCollections.observableArrayList("1h", "2h", "6h", "24h", "7d"));
         rangeBox.setValue("2h");
         rangeBox.setPrefWidth(80);
         chartHeader.getChildren().addAll(chartTitle, sp, new Label("Range:"), rangeBox);
@@ -530,21 +530,21 @@ public class ExpandedView {
         HBox hLabels = new HBox(8, hLeft, new Region(), hRight);
         HBox.setHgrow(hLabels.getChildren().get(1), Priority.ALWAYS);
         liveHealthCard.getChildren().addAll(liveTitle, hBar, hLabels);
-        // Bind to VM health
-        vm.healthPercentProperty().addListener((o, old, hp) -> {
-            int v = hp.intValue();
-            if (v < 0) { hLeft.setText("Health: --"); hFill.setPrefWidth(0); }
-            else {
-                hLeft.setText("Health: " + v + "%");
-                String cycles = vm.healthShortProperty().get();
-                hRight.setText(cycles != null && cycles.contains("Cycles") ? cycles.substring(cycles.indexOf("Cycles")) : "Cycles --");
-                double total = 700; // approx card width
-                try { total = liveHealthCard.getWidth() > 0 ? liveHealthCard.getWidth() - 24 : 700; } catch (Exception ignored) {}
-                hFill.setPrefWidth(Math.max(0, total * v / 100.0));
-                String col = v < 60 ? "-wbs-accent-crit" : v < 80 ? "-wbs-accent-warn" : "-wbs-accent-good";
-                hFill.setStyle("-fx-background-color: " + col + "; -fx-background-radius: 6;");
-            }
-        });
+        // Fill width must track BOTH health changes and card resizes (window
+        // resize / maximize) - recomputing only on health changes left a stale bar
+        Runnable updateHBar = () -> {
+            int v = vm.healthPercentProperty().get();
+            if (v < 0) { hLeft.setText("Health: --"); hFill.setPrefWidth(0); return; }
+            hLeft.setText("Health: " + v + "%");
+            String cycles = vm.healthShortProperty().get();
+            hRight.setText(cycles != null && cycles.contains("Cycles") ? cycles.substring(cycles.indexOf("Cycles")) : "Cycles --");
+            double total = liveHealthCard.getWidth() > 0 ? liveHealthCard.getWidth() - 24 : 100;
+            hFill.setPrefWidth(Math.max(0, Math.min(total, total * v / 100.0)));
+            String col = v < 60 ? "-wbs-accent-crit" : v < 80 ? "-wbs-accent-warn" : "-wbs-accent-good";
+            hFill.setStyle("-fx-background-color: " + col + "; -fx-background-radius: 6;");
+        };
+        vm.healthPercentProperty().addListener((o, old, hp) -> updateHBar.run());
+        liveHealthCard.widthProperty().addListener((o, old, w) -> updateHBar.run());
 
         box.getChildren().addAll(title, healthLabel, detailCard, liveHealthCard, standby, tipsCard, btnRow);
 
@@ -592,6 +592,7 @@ public class ExpandedView {
         table.getColumns().addAll(nameCol, cpuCol);
 
         Button refresh = new Button("Refresh now");
+        refresh.getStyleClass().add("secondary-btn");
         refresh.setOnAction(e -> {
             var top = ProcessUsageService.getTopCpuProcesses(5);
             vm.getProcessRows().clear();
@@ -693,6 +694,9 @@ public class ExpandedView {
             instr.setWrapText(true);
             TextField cap = new TextField(); cap.setPromptText("Press hotkey here"); cap.setEditable(false);
             cap.setOnKeyPressed(ke->{
+                // Modifier keys alone (Ctrl, Shift...) are not valid hotkey keys -
+                // capturing them made hotkeys like "Ctrl+Alt+Ctrl"
+                if (ke.getCode().isModifierKey()) { ke.consume(); return; }
                 int m=0;
                 if(ke.isControlDown()) m|=0x0002;
                 if(ke.isAltDown()) m|=0x0001;
@@ -728,7 +732,16 @@ public class ExpandedView {
             startupBox.setDisable(true); startupBox.setSelected(false);
             startupNote.setText("Disabled in portable mode (config next to exe)");
         } else {
-            startupNote.setText("Starts minimized to system tray on Windows boot.");
+            // Show the REAL registration state, not a generic promise
+            if (!com.batterysaver.util.AppExe.isPackagedExe()) {
+                startupNote.setText("Starts minimized to system tray on Windows boot. (Dev run - test with the installed exe.)");
+            } else if (ss.isRegisteredStale()) {
+                startupNote.setText("Registered path is STALE (exe moved or updated) - Save will repair it.");
+            } else if (ss.isEnabled()) {
+                startupNote.setText("Registered - starts minimized to system tray on Windows boot.");
+            } else {
+                startupNote.setText("Not registered - Save (with the box checked) registers it.");
+            }
         }
         startupNote.setWrapText(true);
         startupRow.getChildren().addAll(startupBox, startupNote);
@@ -745,6 +758,21 @@ public class ExpandedView {
         idleSp.disableProperty().bind(idleBox.selectedProperty().not());
         Label idleMinLbl = new Label("minutes");
         idleRow.getChildren().addAll(idleBox, idleLbl, idleSp, idleMinLbl);
+
+        // Auto Power Saver at low battery - the max-runtime safety net. When the
+        // battery sinks to this % while discharging, Power Saver + EcoQoS engage
+        // automatically (and a toast says so) instead of the laptop just dying.
+        HBox autoSaverRow = new HBox(10);
+        autoSaverRow.setAlignment(Pos.CENTER_LEFT);
+        Label asLbl = new Label("Auto Power Saver at");
+        asLbl.setMinWidth(130);
+        Spinner<Integer> autoSaverSp = new Spinner<>(0, 60, cfg.autoSaverAtPercent);
+        autoSaverSp.setPrefWidth(75); autoSaverSp.setEditable(true);
+        Label asPctLbl = new Label("% battery (0 = off)");
+        asPctLbl.setStyle("-fx-font-size: 11px; -fx-text-fill: -wbs-text-muted;");
+        autoSaverRow.getChildren().addAll(asLbl, autoSaverSp, asPctLbl);
+        Label asHint = new Label("Fires once per discharge (re-arms 5% above the threshold). Also switches background apps to Efficiency Mode.");
+        asHint.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;"); asHint.setWrapText(true);
 
         // --- Elevation (Run as Administrator) row ---
         // Without elevation Windows denies OpenProcess on elevated/system/service
@@ -773,7 +801,7 @@ public class ExpandedView {
         });
         elevRow.getChildren().addAll(elevBtn, elevStatus);
 
-        sysCard.getChildren().addAll(sysTitle, startupRow, idleRow, elevRow);
+        sysCard.getChildren().addAll(sysTitle, startupRow, idleRow, autoSaverRow, asHint, elevRow);
         outer.getChildren().add(sysCard);
 
         // --- EnergyStar EcoQoS Card ---
@@ -811,14 +839,10 @@ public class ExpandedView {
 
         HBox updRow = new HBox(10);
         updRow.setAlignment(Pos.CENTER_LEFT);
-        CheckBox updBox = new CheckBox("Check for updates on startup");
-        updBox.setSelected(cfg.updateCheckEnabled);
-        updBox.setMinWidth(210);
         TextField repoField = new TextField(cfg.updateRepoSlug != null ? cfg.updateRepoSlug : "");
         repoField.setPromptText("user/repo"); repoField.setPrefWidth(220); HBox.setHgrow(repoField, Priority.ALWAYS);
-        // NOT disabled anymore: the repo slug is also used by "Check now" below,
-        // so it can be configured before enabling the startup check
-        updRow.getChildren().addAll(updBox, repoField);
+        Label repoLbl = new Label("Repo:");
+        updRow.getChildren().addAll(repoLbl, repoField);
 
         // Manual check + inline result
         HBox checkRow = new HBox(10);
@@ -876,7 +900,7 @@ public class ExpandedView {
             t.start();
         });
 
-        Label updHint = new Label("Update checks query the GitHub API (api.github.com). No outbound request is made unless you press Check now or enable the startup check.");
+        Label updHint = new Label("No automatic update checks - nothing phones home. \"Check for updates now\" queries the GitHub API only when you click it.");
         updHint.setStyle("-fx-font-size: 10px; -fx-text-fill: -wbs-text-muted;"); updHint.setWrapText(true);
         HBox themeRow = new HBox(10);
         themeRow.setAlignment(Pos.CENTER_LEFT);
@@ -922,8 +946,9 @@ public class ExpandedView {
             saved.chargeLimitPercent=(int)chargeSlider.getValue();
             saved.chargeLimitEnabled=chargeEnabled.isSelected();
             saved.hotkeyModifiers=mods[0]; saved.hotkeyVk=vk[0];
-            saved.idleDimmingEnabled=idleBox.isSelected(); saved.idleMinutes=idleSp.getValue();
-            saved.updateCheckEnabled=updBox.isSelected(); saved.updateRepoSlug=repoField.getText().trim();
+            saved.idleDimmingEnabled=idleBox.isSelected(); saved.idleMinutes=spinnerValue(idleSp, cfg.idleMinutes, 1, 30);
+            saved.autoSaverAtPercent=spinnerValue(autoSaverSp, cfg.autoSaverAtPercent, 0, 60);
+            saved.updateRepoSlug=repoField.getText().trim();
             saved.theme = themeBox.getValue();
             saved.ecoQosEnabled = ecoStBox.isSelected();
             saved.ecoQosWhitelistStr = ecoWlField.getText().trim();
@@ -932,8 +957,15 @@ public class ExpandedView {
             if(!isPortable){
                 try{
                     if(startupBox.isSelected()){
-                        String exe=ProcessHandle.current().info().command().orElse("");
-                        if(!exe.isBlank()) ss.enable(exe);
+                        // Must be the packaged exe, NOT the JVM: ProcessHandle.command()
+                        // can be blank or return java.exe (dev runs) - both previously
+                        // made the checkbox silently do nothing
+                        String exe=com.batterysaver.util.AppExe.currentExePath();
+                        if(exe==null){
+                            new Alert(Alert.AlertType.WARNING,
+                                "Auto-start needs the installed WindowsBatterySaver.exe - this is a dev/JAR run.",
+                                ButtonType.OK).showAndWait();
+                        } else ss.enable(exe);
                     } else ss.disable();
                 }catch(Exception ex){ new Alert(Alert.AlertType.WARNING, ex.getMessage()).showAndWait(); }
             }
@@ -1007,4 +1039,19 @@ public class ExpandedView {
     }
 
     public Stage getStage() { return stage; }
+
+    /**
+     * Reads an editable integer Spinner safely: typed text is only parsed on
+     * commit, and getValue() can throw on malformed input - fall back to the
+     * previous config value clamped to the spinner range instead of failing Save.
+     */
+    private static int spinnerValue(Spinner<Integer> sp, int fallback, int min, int max) {
+        int v;
+        try {
+            v = sp.getValue();
+        } catch (Exception e) {
+            v = fallback;
+        }
+        return Math.max(min, Math.min(max, v));
+    }
 }

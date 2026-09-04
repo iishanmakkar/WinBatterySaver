@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'com.batterysaver'
-version = '1.0.2'
+version = '1.0.3'
 
 java {
     toolchain {
@@ -106,6 +106,7 @@ task jpackageAppImage(type: Exec) {
         '--vendor',      'WBS Open Source',
         '--description', 'Windows Battery Saver - Cross-OEM battery optimizer',
         '--app-version', version,
+        '--icon',        file('packaging/WindowsBatterySaver.ico').absolutePath,
         // No --win-console: this is a silent tray app; that flag builds a
         // console-subsystem launcher that pops a console window on every launch.
         // (Also no --enable-native-access: the fat jar runs on the classpath, so
@@ -135,6 +136,10 @@ task jpackageInstaller(type: Exec) {
         '--vendor',          'WBS Open Source',
         '--description',     'Windows Battery Saver - Cross-OEM battery optimizer',
         '--app-version',     version,
+        '--icon',            file('packaging/WindowsBatterySaver.ico').absolutePath,
+        '--copyright',       'Copyright (c) 2026 iishanmakkar - MIT License',
+        '--about-url',       "https://github.com/${project.findProperty('repoSlug') ?: 'iishanmakkar/WinBatterySaver'}",
+        '--license-file',    file('LICENSE').absolutePath,
         '--win-dir-chooser',
         '--win-shortcut',
         '--win-menu',
@@ -154,64 +159,113 @@ task jpackageInstaller(type: Exec) {
     }
 }
 
-// ─── Self-sign the .exe with a self-signed cert (no UAC red SmartScreen) ──
-task makeSelfSignedCert(type: Exec) {
-    commandLine = [
-        'powershell', '-ExecutionPolicy', 'Bypass', '-Command', '''
-$cert = New-SelfSignedCertificate `
-    -Subject "CN=Windows Battery Saver, O=WBS Open Source, C=IN" `
-    -KeyUsage DigitalSignature `
-    -FriendlyName "WBS Battery Saver Code Sign" `
-    -CertStoreLocation "Cert:\\CurrentUser\\My" `
-    -Type CodeSigningCert `
-    -NotAfter (Get-Date).AddYears(5)
-$thumbprint = $cert.Thumbprint
-Write-Host "CERT_THUMBPRINT=$thumbprint"
-$thumbprint | Out-File -FilePath "build\\cert_thumbprint.txt" -Encoding utf8
-'''
-    ]
-    ignoreExitValue = true
+// ─── Code signing (free self-signed cert, REUSED across builds) ─────────────
+// A persistent cert (created once, then looked up by subject) keeps the
+// publisher identity stable across releases - recreating it per build would
+// reset Windows' trust reputation every time. The cert is FREE (New-
+// SelfSignedCertificate) and lets any laptop verify the publisher after the
+// user installs root cert or clicks through once; timestamping keeps signatures
+// valid long after the cert expires.
+task makeSelfSignedCert {
     doLast {
-        logger.lifecycle "Self-signed cert created in CurrentUser\\My store."
+        def out = new ByteArrayOutputStream()
+        def proc = new ProcessBuilder('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                '-File', file('packaging/sign-cert.ps1').absolutePath)
+            .redirectErrorStream(true)
+            .start()
+        proc.inputStream.withStream { is -> out << is }
+        int exit = proc.waitFor()
+        def text = out.toString()
+        def m = text =~ /CERT_THUMBPRINT=([A-Fa-f0-9]+)/
+        if (exit != 0 || !m.find()) {
+            logger.lifecycle "⚠️ Code signing cert unavailable. Building UNSIGNED - the app still runs; Windows just shows 'unknown publisher'."
+            logger.lifecycle text.trim()
+            return
+        }
+        def thumb = m.group(1)
+        boolean reused = text.contains("CERT_REUSED=1")
+        file("build").mkdirs()
+        file("build/cert_thumbprint.txt").text = thumb
+        logger.lifecycle (reused ? "🔑 Reused existing code-signing cert" : "🔑 Created NEW code-signing cert (will be reused by future builds)") + ": ${thumb}"
     }
 }
 
+// Sign every produced exe (app-image launcher AND the installer .exe) with the
+// persistent free cert + DigiCert timestamp (signature stays valid long after
+// the cert expires). Depends on BOTH packaging tasks so signing always runs
+// after the exes exist.
 task signExe {
-    dependsOn jpackageAppImage, makeSelfSignedCert
+    dependsOn jpackageAppImage, jpackageInstaller, makeSelfSignedCert
     doLast {
-        def thumbprintFile = file("build/cert_thumbprint.txt")
-        def thumbprint = thumbprintFile.exists() ? thumbprintFile.text.trim() : ""
-
-        def exeFiles = fileTree("$buildDir/jpackage-image").matching { include '**/*.exe' }.files
-        if (!exeFiles) {
+        def thumbFile = file("build/cert_thumbprint.txt")
+        if (!thumbFile.exists()) {
+            logger.lifecycle "No cert thumbprint - skipping signing (unsigned build)."
+            return
+        }
+        def thumb = thumbFile.text.trim()
+        def targets = []
+        fileTree("$buildDir/jpackage-image").matching { include '**/*.exe' }.each { targets << it }
+        fileTree("$buildDir/jpackage-installer").matching { include '**/*.exe' }.each { targets << it }
+        if (!targets) {
             logger.lifecycle "No exe found to sign."
             return
         }
-
-        exeFiles.each { exeFile ->
-            if (thumbprint) {
-                def psCmd = "Set-AuthenticodeSignature -FilePath '${exeFile.absolutePath}' -Certificate (Get-Item 'Cert:\\CurrentUser\\My\\${thumbprint}') -TimestampServer 'http://timestamp.digicert.com'"
-                exec {
-                    commandLine 'powershell', '-ExecutionPolicy', 'Bypass', '-Command', psCmd
-                    ignoreExitValue = true
-                }
-                logger.lifecycle "Signed ${exeFile.name} with PowerShell."
-            } else {
-                logger.lifecycle "No thumbprint found to sign ${exeFile.name}."
-            }
+        def script = file('packaging/sign-exe.ps1').absolutePath
+        targets.each { exeFile ->
+            def out = new ByteArrayOutputStream()
+            def proc = new ProcessBuilder('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', script, '-Thumbprint', thumb, '-Path', exeFile.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            proc.inputStream.withStream { is -> out << is }
+            proc.waitFor()
+            logger.lifecycle "🖊 ${exeFile.name}: ${out.toString().trim()}"
         }
     }
 }
 
 // ─── Full portable ZIP (app-image zipped, no install needed) ───────────────
 task portableZip(type: Zip) {
-    dependsOn jpackageAppImage
+    // Zip the SIGNED app image - signing must complete first
+    dependsOn signExe
     archiveFileName = "WindowsBatterySaver-${version}-portable-win64.zip"
     destinationDirectory = file("$buildDir/dist")
     from(file("$buildDir/jpackage-image/WindowsBatterySaver"))
     into 'WindowsBatterySaver'
+    // License ships with the app (also baked into the installer)
+    from('LICENSE') { into 'WindowsBatterySaver' }
     doLast {
         logger.lifecycle "✅ Portable ZIP: ${archiveFile.get()}"
+    }
+}
+
+// ─── Full release bundle: installer .exe + portable zip + checksums ─────────
+// Order matters: build app-image + installer, SIGN the exes, THEN zip the
+// signed app-image (portableZip must not run before signing).
+task releaseBundle {
+    // portableZip pulls signExe (and thus both packaging tasks) transitively
+    dependsOn portableZip
+    doLast {
+        def dist = file("$buildDir/dist")
+        // Stage the installer exe next to the zip for a single release folder
+        fileTree("$buildDir/jpackage-installer").matching { include '**/*.exe' }.each { f ->
+            project.copy {
+                from f
+                into dist
+            }
+        }
+        logger.lifecycle "──────────────── RELEASE ARTIFACTS (${version}) ────────────────"
+        fileTree(dist).matching { include '*.exe', '*.zip' }.sort { it.name }.each { f ->
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            f.withInputStream { is ->
+                byte[] buf = new byte[65536]
+                int n
+                while ((n = is.read(buf)) > 0) md.update(buf, 0, n)
+            }
+            def hash = String.format('%064x', new BigInteger(1, md.digest())).toUpperCase()
+            logger.lifecycle String.format('%-52s %s', f.name, hash)
+        }
+        logger.lifecycle "────────────────────────────────────────────────────────────────"
     }
 }
 
