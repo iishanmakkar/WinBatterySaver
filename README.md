@@ -43,7 +43,9 @@ Windows already has power plans. OEMs (Dell Power Manager, Lenovo Vantage…) sh
 
 ## 📥 Install
 
-1. **[Download the installer](https://github.com/iishanmakkar/WinBatterySaver/releases/latest)** → `WindowsBatterySaver-x.y.z.exe` (portable `.zip` also available — just extract and run).
+1. **[Download the installer](https://github.com/iishanmakkar/WinBatterySaver/releases/latest)** → `WindowsBatterySaver-x.y.z.exe`. Prefer no install? Grab the portable `.zip` from the same release and just extract and run.
+
+   Direct links (v1.0.3): [installer .exe](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3.exe) · [portable .zip](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3-portable-win64.zip) · [SHA256SUMS.txt](https://github.com/iishanmakkar/WinBatterySaver/raw/download/SHA256SUMS.txt)
 2. Run it. Windows SmartScreen may ask for confirmation on first run (free self-signed certificate):
 
    <details><summary><i>Why does SmartScreen show a warning?</i></summary>
