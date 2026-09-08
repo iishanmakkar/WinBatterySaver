@@ -43,13 +43,21 @@ Windows already has power plans. OEMs (Dell Power Manager, Lenovo Vantage…) sh
 
 ## 📥 Install
 
-1. **[Download the installer](https://github.com/iishanmakkar/WinBatterySaver/releases/latest)** → `WindowsBatterySaver-x.y.z.exe`. Prefer no install? Grab the portable `.zip` from the same release and just extract and run.
+1. **Download** from the [latest release](https://github.com/iishanmakkar/WinBatterySaver/releases/latest):
+   - **`WindowsBatterySaver-x.y.z.msi`** — plain Windows Installer package (recommended; installs even on PCs where Smart App Control blocks unsigned .exe launchers)
+   - `WindowsBatterySaver-x.y.z.exe` — setup wizard with the same payload
+   - `WindowsBatterySaver-x.y.z-portable-win64.zip` — no install, just extract and run
 
-   Direct links (v1.0.3): [installer .exe](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3.exe) · [portable .zip](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3-portable-win64.zip) · [SHA256SUMS.txt](https://github.com/iishanmakkar/WinBatterySaver/raw/download/SHA256SUMS.txt)
-2. Run it. Windows SmartScreen may ask for confirmation on first run (free self-signed certificate):
+   Direct links (v1.0.3): [.msi](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3.msi) · [installer .exe](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3.exe) · [portable .zip](https://github.com/iishanmakkar/WinBatterySaver/raw/download/WindowsBatterySaver-1.0.3-portable-win64.zip) · [SHA256SUMS.txt](https://github.com/iishanmakkar/WinBatterySaver/raw/download/SHA256SUMS.txt)
+2. Run the MSI (or exe). Windows SmartScreen may ask for confirmation on first run — the app is code-signed with a free self-signed certificate, so the publisher is verifiable but not yet known to Microsoft. Click **More info → Run anyway**. Everything is open source — build it yourself if you prefer.
 
-   <details><summary><i>Why does SmartScreen show a warning?</i></summary>
-   Code-signing certificates cost $100–400/year. WBS is free open source, so it ships signed with a free self-signed certificate — the signature and publisher are verifiable, but Windows doesn't recognize the certificate authority yet. Click <b>More info → Run anyway</b>. The code is fully open source — build it yourself if you prefer.
+   <details><summary><i>"Blocked by Device Guard / Application Control policy" (Windows 11 Smart App Control)</i></summary>
+   On PCs where <b>Smart App Control (SAC)</b> is <b>On</b>, Windows hard-blocks <i>unsigned</i> .exe launchers — with no "run anyway" option. WBS gives you three ways around it:<br><br>
+   • <b>Use the .msi</b> — Windows Installer (msiexec, a Microsoft-signed component) processes our signed MSI even where unsigned .exe files are blocked.<br>
+   • <b>Portable + any installed Java 17+</b>: extract the .zip and launch the jar with a CA-signed JDK (e.g. free <a href="https://adoptium.net">Temurin 17</a>) — SAC allows Microsoft-recognized CA-signed executables:<br>
+   <code>"C:\Program Files\Eclipse Adoptium\jdk-17\bin\java.exe" --enable-native-access=ALL-UNNAMED -jar WindowsBatterySaver\app\WindowsBatterySaver.jar</code><br>
+   • Turn SAC off (Settings → Privacy & security → Windows Security → App & browser control → Smart App Control → Off). Note: SAC cannot be turned back on without reinstalling Windows — Microsoft Defender stays on either way.<br><br>
+   Check your SAC state: <code>(Get-MpComputerStatus).SmartAppControlState</code>. The permanent project fix — a trusted certificate-authority signature — is planned (see docs/signing.md).
    </details>
 
 3. That's it. WBS lives in your system tray. **Auto-start with Windows is configured automatically** — no account, no subscription, no upsell.

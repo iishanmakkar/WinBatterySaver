@@ -27,3 +27,7 @@ test.txt
 compile.log
 wbs_cert.cer
 trust_cert.ps1
+
+# Local tooling / video project (not part of the app)
+launch-video/
+.mimosa/

@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class StartupServiceTest {
 
     private static final String KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    private static final String APPROVED_KEY =
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
     private static final String VALUE = "WindowsBatterySaver";
     private static final String LEGACY = "BatterySaver";
 
@@ -145,6 +147,35 @@ public class StartupServiceTest {
             ss.ensureRegistered(null, false);
             assertFalse(ss.isEnabled(), "wants=false must clear a stale entry");
         } finally {
+            ss.disable();
+        }
+    }
+
+    @Test
+    void taskManagerDisableIsDetectedAndHealed() {
+        Assumptions.assumeTrue(runKeyWritable, "HKCU Run key not writable (CI runner) - skipping");
+        String exe = ProcessHandle.current().info().command().orElse(null);
+        Assumptions.assumeTrue(exe != null && java.nio.file.Files.isRegularFile(java.nio.file.Path.of(exe)),
+                "no resolvable running exe on this host");
+        try {
+            ss.ensureRegistered(exe, true);
+            assertFalse(ss.isDisabledByTaskManager(), "fresh registration must not be TM-disabled");
+
+            // Simulate the user toggling the app OFF in Task Manager's Startup tab:
+            // a 12-byte flag with bit0 set in the first byte
+            byte[] disabled = new byte[]{0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+            Advapi32Util.registrySetBinaryValue(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, VALUE, disabled);
+            assertTrue(ss.isDisabledByTaskManager(), "bit0 flag must read as TM-disabled");
+
+            // ensureRegistered (wants=true) must clear the silent kill-switch
+            String result = ss.ensureRegistered(exe, true);
+            assertFalse(ss.isDisabledByTaskManager(), "ensureRegistered must re-enable a TM-disabled entry");
+            assertTrue(result.contains("re-enabled"), "result must report the heal: " + result);
+        } finally {
+            // ensureRegistered may have already cleared the flag - delete only if present
+            if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, VALUE)) {
+                Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, VALUE);
+            }
             ss.disable();
         }
     }

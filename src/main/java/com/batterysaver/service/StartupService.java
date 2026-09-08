@@ -13,6 +13,11 @@ import java.nio.file.Path;
  */
 public class StartupService {
     private static final String KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    // Task Manager's per-app startup toggle lives here: a value named like ours
+    // with bit0 set in the first byte = user disabled autostart there. The Run
+    // key alone is NOT the whole truth - this key silently kills the launch.
+    private static final String APPROVED_KEY =
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
     // Must match the name used by build.gradle's generateAutoStartScript, otherwise
     // two different Run entries can coexist and double-start the app.
     private static final String VALUE = "WindowsBatterySaver";
@@ -78,6 +83,44 @@ public class StartupService {
     }
 
     /**
+     * True when Task Manager's Startup tab has our entry toggled OFF. Windows
+     * records that in Explorer\\StartupApproved\\Run without touching the Run
+     * key itself - so isEnabled() can say "registered" while Windows silently
+     * skips the launch at logon. Bit0 of the first byte set = disabled.
+     */
+    public boolean isDisabledByTaskManager() {
+        return approvedFlagSet(VALUE);
+    }
+
+    /** True when the legacy value name has a leftover approval-flag entry. */
+    public boolean hasLegacyApprovalEntry() {
+        return approvedFlagSet(LEGACY_VALUE);
+    }
+
+    private boolean approvedFlagSet(String valueName) {
+        try {
+            if (!Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, valueName)) {
+                return false;
+            }
+            byte[] flag = Advapi32Util.registryGetBinaryValue(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, valueName);
+            return flag != null && flag.length >= 1 && (flag[0] & 0x01) != 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Deletes a StartupApproved flag entry, which re-enables the logon launch. */
+    private void removeApprovalFlag(String valueName) {
+        try {
+            if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, valueName)) {
+                Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, APPROVED_KEY, valueName);
+            }
+        } catch (Exception e) {
+            System.err.println("StartupService.removeApprovalFlag failed: " + e.getMessage());
+        }
+    }
+
+    /**
      * Extract the exe path from a registered command: the first quoted token,
      * or the text before " --minimized" for unquoted legacy entries.
      */
@@ -120,11 +163,23 @@ public class StartupService {
                 boolean pointsAtUs = registeredExe != null
                         && registeredExe.equalsIgnoreCase(exePath)
                         && Files.isRegularFile(Path.of(registeredExe));
-                if (pointsAtUs) {
-                    result = "enabled";
-                } else {
+                if (!pointsAtUs) {
                     enable(exePath);
                     result = cmd == null ? "enabled (first run)" : "repaired (path changed)";
+                } else {
+                    result = "enabled";
+                }
+                // The Run key is only half the story: if Task Manager's Startup tab
+                // (or an OEM cleanup tool) flagged the entry off, Windows skips the
+                // logon launch while every registry check still says "registered".
+                // The user's saved setting says ON, so clear the silent kill-switch.
+                if (isDisabledByTaskManager()) {
+                    removeApprovalFlag(VALUE);
+                    result += " + re-enabled (was switched off in Task Manager)";
+                }
+                // Legacy flag entries only confuse Task Manager's list - clean them
+                if (hasLegacyApprovalEntry()) {
+                    removeApprovalFlag(LEGACY_VALUE);
                 }
             }
         } catch (Exception e) {

@@ -117,49 +117,10 @@ task jpackageAppImage(type: Exec) {
     ignoreExitValue = false
 }
 
-// ─── jpackage .exe installer (requires WiX 3.x on PATH) ───────────────────
-task jpackageInstaller(type: Exec) {
-    dependsOn fatJar
-    def outDir = file("$buildDir/jpackage-installer").absolutePath
-
-    doFirst {
-        delete outDir
-        mkdir outDir
-    }
-
-    commandLine = [
-        jpackageBin,
-        '--type',            'exe',
-        '--input',           file("$buildDir/fat").absolutePath,
-        '--dest',            outDir,
-        '--name',            'WindowsBatterySaver',
-        '--main-jar',        'WindowsBatterySaver.jar',
-        '--main-class',      'com.batterysaver.Launcher',
-        '--vendor',          'WBS Open Source',
-        '--description',     'Windows Battery Saver - Cross-OEM battery optimizer',
-        '--app-version',     version,
-        '--icon',            file('packaging/WindowsBatterySaver.ico').absolutePath,
-        '--copyright',       'Copyright (c) 2026 iishanmakkar - MIT License',
-        '--about-url',       "https://github.com/${project.findProperty('repoSlug') ?: 'iishanmakkar/WinBatterySaver'}",
-        '--license-file',    file('LICENSE').absolutePath,
-        '--win-dir-chooser',
-        '--win-shortcut',
-        '--win-menu',
-        '--win-menu-group',  'Windows Battery Saver',
-        '--win-upgrade-uuid','a1b2c3d4-e5f6-7890-abcd-ef1234567890'
-    ]
-    ignoreExitValue = true
-
-    doLast {
-        def exeFiles = fileTree(outDir).matching { include '**/*.exe' }.files
-        if (exeFiles) {
-            logger.lifecycle "✅ Installer created: ${exeFiles*.name}"
-        } else {
-            logger.lifecycle "⚠️  WiX toolset not found. Install WiX 3.x from https://github.com/wixtoolset/wix3/releases and re-run."
-            logger.lifecycle "   Alternatively, use 'gradlew jpackageAppImage' which does NOT require WiX."
-        }
-    }
-}
+// ─── jpackage .exe installer ───────────────────────────────────────────────
+// The installer packs the SIGNED app image (see jpackageSignedInstaller below).
+// The old --input based task built a fresh UNSIGNED image inside the MSI, so the
+// installed exe had no signature at all - that shipped in 1.0.3 and is fixed here.
 
 // ─── Code signing (free self-signed cert, REUSED across builds) ─────────────
 // A persistent cert (created once, then looked up by subject) keeps the
@@ -192,12 +153,9 @@ task makeSelfSignedCert {
     }
 }
 
-// Sign every produced exe (app-image launcher AND the installer .exe) with the
-// persistent free cert + DigiCert timestamp (signature stays valid long after
-// the cert expires). Depends on BOTH packaging tasks so signing always runs
-// after the exes exist.
-task signExe {
-    dependsOn jpackageAppImage, jpackageInstaller, makeSelfSignedCert
+// Sign the app-image launcher (jpackage marks it read-only; script clears that).
+task signAppImage {
+    dependsOn jpackageAppImage, makeSelfSignedCert
     doLast {
         def thumbFile = file("build/cert_thumbprint.txt")
         if (!thumbFile.exists()) {
@@ -205,15 +163,73 @@ task signExe {
             return
         }
         def thumb = thumbFile.text.trim()
-        def targets = []
-        fileTree("$buildDir/jpackage-image").matching { include '**/*.exe' }.each { targets << it }
-        fileTree("$buildDir/jpackage-installer").matching { include '**/*.exe' }.each { targets << it }
-        if (!targets) {
-            logger.lifecycle "No exe found to sign."
+        def script = file('packaging/sign-exe.ps1').absolutePath
+        fileTree("$buildDir/jpackage-image").matching { include '**/*.exe' }.each { exeFile ->
+            def out = new ByteArrayOutputStream()
+            def proc = new ProcessBuilder('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', script, '-Thumbprint', thumb, '-Path', exeFile.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            proc.inputStream.withStream { is -> out << is }
+            proc.waitFor()
+            logger.lifecycle "🖊 ${exeFile.name}: ${out.toString().trim()}"
+        }
+    }
+}
+
+// Installer PACKS THE SIGNED app image (--app-image), so the installed exe is
+// signed too - not just the installer. Without this, jpackage built a fresh
+// UNSIGNED app image inside the MSI and the installed exe had no signature.
+task jpackageSignedInstaller(type: Exec) {
+    dependsOn signAppImage
+    def outDir = file("$buildDir/jpackage-installer").absolutePath
+
+    doFirst {
+        delete outDir
+        mkdir outDir
+    }
+
+    commandLine = [
+        jpackageBin,
+        '--type',            'exe',
+        '--app-image',       file("$buildDir/jpackage-image/WindowsBatterySaver").absolutePath,
+        '--dest',            outDir,
+        '--vendor',          'WBS Open Source',
+        '--description',     'Windows Battery Saver - Cross-OEM battery optimizer',
+        '--app-version',     version,
+        '--copyright',       'Copyright (c) 2026 iishanmakkar - MIT License',
+        '--about-url',       "https://github.com/${project.findProperty('repoSlug') ?: 'iishanmakkar/WinBatterySaver'}",
+        '--license-file',    file('LICENSE').absolutePath,
+        '--win-dir-chooser',
+        '--win-shortcut',
+        '--win-menu',
+        '--win-menu-group',  'Windows Battery Saver',
+        '--win-upgrade-uuid','a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+    ]
+    ignoreExitValue = true
+
+    doLast {
+        def exeFiles = fileTree(outDir).matching { include '**/*.exe' }.files
+        if (exeFiles) {
+            logger.lifecycle "✅ Installer created: ${exeFiles*.name}"
+        } else {
+            logger.lifecycle "⚠️  jpackage exe installer failed (WiX missing?) - see output above."
+        }
+    }
+}
+
+// Sign the installer exe AFTER it exists (signAppImage -> jpackageSignedInstaller -> signInstaller)
+task signInstaller {
+    dependsOn jpackageSignedInstaller, makeSelfSignedCert
+    doLast {
+        def thumbFile = file("build/cert_thumbprint.txt")
+        if (!thumbFile.exists()) {
+            logger.lifecycle "No cert thumbprint - skipping installer signing."
             return
         }
+        def thumb = thumbFile.text.trim()
         def script = file('packaging/sign-exe.ps1').absolutePath
-        targets.each { exeFile ->
+        fileTree("$buildDir/jpackage-installer").matching { include '**/*.exe' }.each { exeFile ->
             def out = new ByteArrayOutputStream()
             def proc = new ProcessBuilder('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
                     '-File', script, '-Thumbprint', thumb, '-Path', exeFile.absolutePath)
@@ -229,7 +245,7 @@ task signExe {
 // ─── Full portable ZIP (app-image zipped, no install needed) ───────────────
 task portableZip(type: Zip) {
     // Zip the SIGNED app image - signing must complete first
-    dependsOn signExe
+    dependsOn signAppImage
     archiveFileName = "WindowsBatterySaver-${version}-portable-win64.zip"
     destinationDirectory = file("$buildDir/dist")
     from(file("$buildDir/jpackage-image/WindowsBatterySaver"))
@@ -244,20 +260,121 @@ task portableZip(type: Zip) {
 // ─── Full release bundle: installer .exe + portable zip + checksums ─────────
 // Order matters: build app-image + installer, SIGN the exes, THEN zip the
 // signed app-image (portableZip must not run before signing).
+// ─── Plain .MSI release (same bits as the .exe installer, no stub wrapper) ──
+// Enterprises / cautious users prefer a plain .msi over an .exe stub. Same
+// upgrade UUID, so the .exe and .msi upgrade each other cleanly.
+task jpackageMsi(type: Exec) {
+    dependsOn signAppImage
+    def outDir = file("$buildDir/jpackage-msi").absolutePath
+
+    doFirst {
+        delete outDir
+        mkdir outDir
+    }
+
+    commandLine = [
+        jpackageBin,
+        '--type',            'msi',
+        '--app-image',       file("$buildDir/jpackage-image/WindowsBatterySaver").absolutePath,
+        '--dest',            outDir,
+        '--vendor',          'WBS Open Source',
+        '--description',     'Windows Battery Saver - Cross-OEM battery optimizer',
+        '--app-version',     version,
+        '--copyright',       'Copyright (c) 2026 iishanmakkar - MIT License',
+        '--about-url',       "https://github.com/${project.findProperty('repoSlug') ?: 'iishanmakkar/WinBatterySaver'}",
+        '--license-file',    file('LICENSE').absolutePath,
+        '--win-dir-chooser',
+        '--win-shortcut',
+        '--win-menu',
+        '--win-menu-group',  'Windows Battery Saver',
+        '--win-upgrade-uuid','a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+    ]
+    ignoreExitValue = true
+
+    doLast {
+        def msi = fileTree(outDir).matching { include '**/*.msi' }.files
+        if (msi) {
+            logger.lifecycle "MSI created: ${msi*.name}"
+        } else {
+            logger.lifecycle "MSI build failed (WiX missing?) - see output above."
+        }
+    }
+}
+
+// Sign the .msi with the free self-signed cert (Authenticode covers MSI files).
+task signMsi {
+    dependsOn jpackageMsi, makeSelfSignedCert
+    doLast {
+        def thumbFile = file("build/cert_thumbprint.txt")
+        if (!thumbFile.exists()) { logger.lifecycle "No cert thumbprint - skipping MSI signing."; return }
+        def thumb = thumbFile.text.trim()
+        def script = file('packaging/sign-exe.ps1').absolutePath
+        fileTree("$buildDir/jpackage-msi").matching { include '**/*.msi' }.each { msiFile ->
+            def out = new ByteArrayOutputStream()
+            def proc = new ProcessBuilder('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', script, '-Thumbprint', thumb, '-Path', msiFile.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            proc.inputStream.withStream { is -> out << is }
+            proc.waitFor()
+            logger.lifecycle "SIGNED ${msiFile.name}: ${out.toString().trim()}"
+        }
+    }
+}
+
+// ─── Trusted-CA signing (the permanent SAC/SmartScreen fix) ─────────────────
+// When the project obtains a CA-signed certificate (SignPath Foundation free
+// OSS, Certum, or Azure Trusted Signing), run:
+//   gradlew releaseBundle signTrusted -PsignPfx=C:\path\cert.pfx -PsignPfxPassEnv=WBS_SIGN_PFX_PASS
+// This re-signs BOTH final exes with the trusted cert, replacing the free
+// self-signed signature. See packaging/sign-trusted.ps1 and docs/signing.md.
+task signTrusted {
+    doLast {
+        def pfx = project.findProperty('signPfx')
+        if (!pfx) {
+            logger.lifecycle "signTrusted: pass -PsignPfx=<path to .pfx> (password via env var, default WBS_SIGN_PFX_PASS)"
+            return
+        }
+        def passEnv = project.findProperty('signPfxPassEnv') ?: 'WBS_SIGN_PFX_PASS'
+        def script = file('packaging/sign-trusted.ps1').absolutePath
+        def targets = []
+        fileTree("$buildDir/jpackage-image").matching { include '**/*.exe' }.each { targets << it }
+        fileTree("$buildDir/jpackage-installer").matching { include '**/*.exe' }.each { targets << it }
+        targets.each { exeFile ->
+            def out = new ByteArrayOutputStream()
+            def proc = new ProcessBuilder('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-File', script, '-Path', exeFile.absolutePath, '-Pfx', pfx.toString(), '-PasswordEnv', passEnv.toString())
+                .redirectErrorStream(true)
+                .start()
+            proc.inputStream.withStream { is -> out << is }
+            proc.waitFor()
+            logger.lifecycle "🔏 ${exeFile.name}: ${out.toString().trim()}"
+        }
+    }
+}
+
 task releaseBundle {
-    // portableZip pulls signExe (and thus both packaging tasks) transitively
-    dependsOn portableZip
+    // Build app-image -> sign -> pack installer + MSI (signed image inside) ->
+    // sign everything -> zip. portableZip pulls signAppImage; signInstaller and
+    // signMsi pull their packaging tasks which pull signAppImage.
+    dependsOn portableZip, signInstaller, signMsi
     doLast {
         def dist = file("$buildDir/dist")
-        // Stage the installer exe next to the zip for a single release folder
+        // Stage installer exe + msi next to the zip for a single release folder
         fileTree("$buildDir/jpackage-installer").matching { include '**/*.exe' }.each { f ->
             project.copy {
                 from f
                 into dist
             }
         }
+        fileTree("$buildDir/jpackage-msi").matching { include '**/*.msi' }.each { f ->
+            project.copy {
+                from f
+                into dist
+            }
+        }
         logger.lifecycle "──────────────── RELEASE ARTIFACTS (${version}) ────────────────"
-        fileTree(dist).matching { include '*.exe', '*.zip' }.sort { it.name }.each { f ->
+        fileTree(dist).matching { include '*.exe', '*.msi', '*.zip' }.sort { it.name }.each { f ->
             def md = java.security.MessageDigest.getInstance('SHA-256')
             f.withInputStream { is ->
                 byte[] buf = new byte[65536]
